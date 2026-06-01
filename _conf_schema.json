@@ -1,0 +1,68 @@
+{
+  "hindsight_api_url": {
+    "description": "Hindsight API 地址",
+    "type": "string",
+    "default": "http://192.168.1.10:8888",
+    "hint": "Hindsight 服务的 HTTP 地址"
+  },
+  "hindsight_api_key": {
+    "description": "API Key（如果启用了认证）",
+    "type": "string",
+    "default": "",
+    "hint": "留空表示不需要认证"
+  },
+  "bank_id": {
+    "description": "记忆库 ID",
+    "type": "string",
+    "default": "astrbot",
+    "hint": "用于隔离不同机器人的记忆"
+  },
+  "auto_retain": {
+    "description": "自动记忆存储",
+    "type": "bool",
+    "default": true,
+    "hint": "自动存储对话中的用户消息"
+  },
+  "auto_recall": {
+    "description": "自动记忆回忆",
+    "type": "bool",
+    "default": true,
+    "hint": "在对话时自动注入相关历史记忆"
+  },
+  "max_recall_results": {
+    "description": "最大回忆数量",
+    "type": "int",
+    "default": 5,
+    "hint": "每次对话注入的最大记忆条数"
+  },
+  "min_relevance": {
+    "description": "最小相关度阈值",
+    "type": "float",
+    "default": 0.7,
+    "hint": "低于此阈值的记忆不会被注入 (0-1)"
+  },
+  "import_history_on_load": {
+    "description": "启动时自动导入历史",
+    "type": "bool",
+    "default": false,
+    "hint": "插件加载时自动导入 AstrBot 历史对话"
+  },
+  "import_history_limit": {
+    "description": "历史导入数量",
+    "type": "int",
+    "default": 100,
+    "hint": "自动导入时的最大对话数量"
+  },
+  "exclude_groups": {
+    "description": "排除的群组",
+    "type": "list",
+    "default": [],
+    "hint": "不进行记忆存储的群组 ID"
+  },
+  "exclude_users": {
+    "description": "排除的用户",
+    "type": "list",
+    "default": [],
+    "hint": "不进行记忆存储的用户 ID"
+  }
+}
