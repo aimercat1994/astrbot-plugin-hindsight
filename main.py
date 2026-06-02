@@ -4,6 +4,7 @@
 """
 
 import json
+import time
 from pathlib import Path
 
 from astrbot.api.event import filter, AstrMessageEvent, MessageEventResult
@@ -56,6 +57,29 @@ class HindsightPlugin(Star):
 
         logger.info("Hindsight 插件已加载")
 
+        # 导入状态文件
+        self._import_state_file = Path(get_astrbot_data_path()) / "plugins" / "hindsight_import_state.json"
+        self._import_state = self._load_import_state()
+
+    def _load_import_state(self) -> dict:
+        """加载导入状态"""
+        try:
+            if self._import_state_file.exists():
+                with open(self._import_state_file, "r", encoding="utf-8") as f:
+                    return json.load(f)
+        except Exception as e:
+            logger.warning(f"加载导入状态失败: {e}")
+        return {"last_import_time": 0, "imported_cids": []}
+
+    def _save_import_state(self):
+        """保存导入状态"""
+        try:
+            self._import_state_file.parent.mkdir(parents=True, exist_ok=True)
+            with open(self._import_state_file, "w", encoding="utf-8") as f:
+                json.dump(self._import_state, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logger.warning(f"保存导入状态失败: {e}")
+
     async def _init_bank(self):
         """初始化 bank 配置（插件加载时自动执行）"""
         try:
@@ -102,7 +126,7 @@ class HindsightPlugin(Star):
             await self._auto_import_history()
 
     async def _auto_import_history(self):
-        """自动导入历史对话"""
+        """自动导入历史对话（只导入新对话）"""
         try:
             limit = self.config.get("import_history_limit", 100)
             conv_mgr = self.context.conversation_manager
@@ -115,9 +139,19 @@ class HindsightPlugin(Star):
                 logger.info("没有历史对话需要导入")
                 return
 
+            # 已导入的对话 ID 集合
+            imported_cids = set(self._import_state.get("imported_cids", []))
+            last_import_time = self._import_state.get("last_import_time", 0)
+
             imported = 0
+            skipped = 0
             for conv in conversations[:limit]:
                 try:
+                    # 跳过已导入的对话
+                    if conv.cid in imported_cids:
+                        skipped += 1
+                        continue
+
                     history = json.loads(conv.history or "[]")
                     for msg in history:
                         role = msg.get("role", "")
@@ -137,10 +171,22 @@ class HindsightPlugin(Star):
                                 },
                             )
                             imported += 1
+
+                    # 标记为已导入
+                    imported_cids.add(conv.cid)
+
                 except Exception as e:
                     logger.warning(f"导入对话 {conv.cid} 失败: {e}")
 
-            logger.info(f"自动导入历史完成，共导入 {imported} 条消息")
+            # 保存导入状态
+            self._import_state["imported_cids"] = list(imported_cids)
+            self._import_state["last_import_time"] = int(time.time())
+            self._save_import_state()
+
+            if imported > 0:
+                logger.info(f"自动导入历史完成，新导入 {imported} 条消息，跳过 {skipped} 个已导入对话")
+            else:
+                logger.info(f"没有新对话需要导入，跳过 {skipped} 个已导入对话")
 
         except Exception as e:
             logger.error(f"自动导入历史失败: {e}")
@@ -368,12 +414,24 @@ class HindsightPlugin(Star):
             logger.error(f"初始化记忆库失败: {e}")
             yield event.plain_result(f"❌ 初始化失败: {e}")
 
+    @hindsight_group.command("reset_import", alias={"重置导入状态"})
+    async def reset_import_state(self, event: AstrMessageEvent):
+        """重置导入状态（下次启动将重新导入所有对话）"""
+        try:
+            self._import_state = {"last_import_time": 0, "imported_cids": []}
+            self._save_import_state()
+            yield event.plain_result("✅ 已重置导入状态，下次启动将重新导入所有对话")
+        except Exception as e:
+            logger.error(f"重置导入状态失败: {e}")
+            yield event.plain_result(f"❌ 重置失败: {e}")
+
     @hindsight_group.command("import", alias={"导入历史"})
-    async def import_history(self, event: AstrMessageEvent, limit: int = 100):
+    async def import_history(self, event: AstrMessageEvent, limit: int = 100, force: bool = False):
         """导入 AstrBot 历史对话到 Hindsight
 
         Args:
             limit(number): 导入的对话数量，默认 100
+            force(bool): 强制重新导入所有对话（忽略已导入记录），默认 false
         """
         try:
             yield event.plain_result("📥 开始导入历史对话...")
@@ -390,11 +448,20 @@ class HindsightPlugin(Star):
                 yield event.plain_result("📭 没有找到历史对话")
                 return
 
+            # 已导入的对话 ID 集合
+            imported_cids = set(self._import_state.get("imported_cids", [])) if not force else set()
+
             imported = 0
+            skipped = 0
             errors = 0
 
             for conv in conversations[:limit]:
                 try:
+                    # 跳过已导入的对话（除非强制模式）
+                    if conv.cid in imported_cids:
+                        skipped += 1
+                        continue
+
                     history = json.loads(conv.history or "[]")
 
                     for msg_idx, msg in enumerate(history):
@@ -433,6 +500,9 @@ class HindsightPlugin(Star):
                             except Exception as retain_err:
                                 logger.warning(f"导入消息失败 (conv={conv.cid}, msg={msg_idx}): {retain_err}")
 
+                    # 标记为已导入
+                    imported_cids.add(conv.cid)
+
                 except Exception as e:
                     errors += 1
                     # 打印详细错误信息
@@ -445,9 +515,18 @@ class HindsightPlugin(Star):
                     except Exception as log_err:
                         logger.warning(f"导入对话 {conv.cid} 失败: {e}")
 
-            result = f"✅ 导入完成！共导入 {imported} 条消息"
+            # 保存导入状态
+            self._import_state["imported_cids"] = list(imported_cids)
+            self._import_state["last_import_time"] = int(time.time())
+            self._save_import_state()
+
+            result = f"✅ 导入完成！新导入 {imported} 条消息"
+            if skipped > 0:
+                result += f"，跳过 {skipped} 个已导入对话"
             if errors > 0:
                 result += f"，{errors} 个对话导入失败"
+            if force:
+                result += "（强制模式）"
             yield event.plain_result(result)
 
         except Exception as e:
