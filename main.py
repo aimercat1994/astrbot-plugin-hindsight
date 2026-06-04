@@ -42,6 +42,17 @@ BANK_CONFIG = {
     ],
 }
 
+# 群聊噪声过滤：短于这个长度的消息不存储
+GROUP_MIN_MSG_LENGTH = 6
+
+# 群聊噪声关键词（表情包、系统消息等）
+GROUP_NOISE_PATTERNS = [
+    "[图片]", "[表情]", "[语音]", "[视频]", "[文件]",
+    "[动画表情]", "[QQ表情]", "[贴纸]",
+    "撤回了一条消息", "加入了群聊", "退出了群聊",
+    "被管理员", "被群主",
+]
+
 
 class HindsightPlugin(Star):
     """Hindsight 长期记忆插件"""
@@ -70,8 +81,16 @@ class HindsightPlugin(Star):
         self._mm_cache = TTLCache(ttl=config.get("cache_ttl", 300))  # Mental Model 缓存
         self._recall_cache = TTLCache(ttl=config.get("recall_cache_ttl", 60))  # Recall 结缓存
 
+        # 群聊频率限制：group_id -> last_recall_timestamp
+        self._group_recall_ts: dict[str, float] = {}
+        self._group_recall_interval = config.get("group_recall_interval", 5.0)
+
         # 统计
-        self._stats = {"recall_hits": 0, "recall_misses": 0, "mm_hits": 0, "mm_misses": 0}
+        self._stats = {
+            "recall_hits": 0, "recall_misses": 0,
+            "mm_hits": 0, "mm_misses": 0,
+            "group_skipped": 0, "group_stored": 0,
+        }
 
         # 后台清理任务
         self._cleanup_task: asyncio.Task | None = None
@@ -154,17 +173,24 @@ class HindsightPlugin(Star):
             await self._auto_import_history()
 
     async def _periodic_cleanup(self):
-        """每 5 分钟清理过期缓存和孤立的用户消息缓存"""
+        """每 5 分钟清理过期缓存和频率限制记录"""
         while True:
             try:
                 await asyncio.sleep(300)
                 self._mm_cache.cleanup()
                 self._recall_cache.cleanup()
 
-                # 清理超过 10 分钟的用户消息缓存（防止泄漏）
-                # 用 session_id 无法判断时间，直接限制大小
+                # 清理超过 1 小时的群聊频率限制记录
+                now = time.monotonic()
+                expired_groups = [
+                    gid for gid, ts in self._group_recall_ts.items()
+                    if now - ts > 3600
+                ]
+                for gid in expired_groups:
+                    del self._group_recall_ts[gid]
+
+                # 限制 user_msg_cache 大小
                 if len(self._user_msg_cache) > 1000:
-                    # 保留最后 500 条
                     keys = list(self._user_msg_cache.keys())
                     for k in keys[:-500]:
                         del self._user_msg_cache[k]
@@ -241,6 +267,8 @@ class HindsightPlugin(Star):
         except Exception as e:
             logger.error(f"自动导入历史失败: {e}")
 
+    # ==================== 群聊辅助方法 ====================
+
     def _is_excluded(self, event: AstrMessageEvent) -> bool:
         """检查是否在排除列表"""
         user_id = event.get_sender_id()
@@ -255,6 +283,106 @@ class HindsightPlugin(Star):
             return True
         return False
 
+    def _is_group_chat(self, event: AstrMessageEvent) -> bool:
+        """判断是否为群聊"""
+        return bool(event.get_group_id())
+
+    def _is_bot_mentioned(self, event: AstrMessageEvent) -> bool:
+        """判断 bot 是否被 @ 或回复"""
+        # 检查是否 @ 了 bot
+        if hasattr(event, "message_obj") and event.message_obj:
+            for comp in getattr(event.message_obj, "message", []):
+                comp_type = type(comp).__name__
+                if comp_type == "At":
+                    # 检查 @ 的是否是 bot 自己
+                    at_id = getattr(comp, "qq", None) or getattr(comp, "id", None)
+                    if str(at_id) == str(event.get_self_id()):
+                        return True
+        # 如果 AstrBot 已经把消息路由到了 LLM，说明 bot 一定被触发了
+        # 所以到达 on_request/on_response 的群消息本身就是 bot 相关的
+        return True
+
+    def _is_group_noise(self, content: str) -> bool:
+        """判断群消息是否为噪声（表情包、系统消息等）"""
+        if not content:
+            return True
+        # 短消息
+        if len(content.strip()) < GROUP_MIN_MSG_LENGTH:
+            return True
+        # 噪声模式匹配
+        for pattern in GROUP_NOISE_PATTERNS:
+            if pattern in content:
+                return True
+        return False
+
+    def _should_store_group_msg(self, event: AstrMessageEvent, content: str) -> bool:
+        """判断是否应该存储群消息"""
+        mode = self.config.get("group_store_mode", "smart")
+
+        if mode == "all":
+            return not self._is_group_noise(content)
+
+        if mode == "bot_only":
+            # 只存储 bot 参与的对话（到达 on_response 说明 bot 已回复）
+            return True
+
+        if mode == "smart":
+            # 智能模式：
+            # 1. 噪声消息跳过
+            if self._is_group_noise(content):
+                return False
+            # 2. 较长的消息可能有价值
+            if len(content) > 30:
+                return True
+            # 3. 包含问号的消息可能是问题
+            if "？" in content or "?" in content:
+                return True
+            # 4. bot 参与的对话总是存储
+            return True
+
+        return True
+
+    def _should_recall_group(self, event: AstrMessageEvent) -> bool:
+        """判断是否应该在群聊中触发 recall"""
+        mode = self.config.get("group_recall_mode", "smart")
+
+        if mode == "always":
+            return True
+
+        if mode == "bot_only":
+            return self._is_bot_mentioned(event)
+
+        if mode == "smart":
+            # 智能模式：
+            # 1. bot 被 @ 总是 recall
+            if self._is_bot_mentioned(event):
+                return True
+            # 2. 消息较长（可能是问题）时 recall
+            msg = event.message_str
+            if msg and len(msg) > 20:
+                return True
+            # 3. 包含问号时 recall
+            if msg and ("？" in msg or "?" in msg):
+                return True
+            return False
+
+        return True
+
+    def _check_group_rate_limit(self, group_id: str) -> bool:
+        """检查群聊频率限制，返回 True 表示允许，False 表示限流"""
+        if not group_id:
+            return True
+
+        now = time.monotonic()
+        last_ts = self._group_recall_ts.get(group_id, 0)
+        interval = self._group_recall_interval
+
+        if now - last_ts < interval:
+            return False
+
+        self._group_recall_ts[group_id] = now
+        return True
+
     def _get_event_metadata(self, event: AstrMessageEvent) -> dict:
         """从事件中提取标准元数据"""
         return {
@@ -264,6 +392,15 @@ class HindsightPlugin(Star):
             "platform": event.get_platform_name() or "",
             "group_id": event.get_group_id() or "",
         }
+
+    def _format_group_content(self, event: AstrMessageEvent, content: str) -> str:
+        """格式化群聊消息内容（添加发言人信息）"""
+        user_name = event.get_sender_name() or ""
+        group_id = event.get_group_id()
+
+        if group_id and user_name:
+            return f"[{user_name}] {content}"
+        return content
 
     async def _get_mental_models_context(self) -> str:
         """获取 Mental Model 上下文（带缓存）"""
@@ -307,6 +444,7 @@ class HindsightPlugin(Star):
 
         user_msg = event.message_str
         session_id = event.session_id
+        is_group = self._is_group_chat(event)
 
         # 缓存用户消息，用于后续配对 bot 回复
         if user_msg:
@@ -319,9 +457,24 @@ class HindsightPlugin(Star):
         if not hasattr(event, "llm_request") or not event.llm_request:
             return
 
+        # 群聊 recall 过滤
+        if is_group:
+            if not self._should_recall_group(event):
+                self._stats["group_skipped"] += 1
+                return
+            # 群聊频率限制
+            group_id = event.get_group_id()
+            if not self._check_group_rate_limit(group_id):
+                self._stats["group_skipped"] += 1
+                return
+
         try:
             max_results = self.config.get("max_recall_results", 5)
             min_relevance = self.config.get("min_relevance", 0.7)
+
+            # 群聊中可以用更低的相关度阈值（更宽泛地回忆）
+            if is_group:
+                min_relevance = self.config.get("group_min_relevance", 0.5)
 
             # 检查 recall 缓存
             cache_key = f"recall_{hash(user_msg)}_{max_results}_{min_relevance}"
@@ -353,9 +506,12 @@ class HindsightPlugin(Star):
 
             # 注入 Mental Model 上下文（带缓存）
             if self.config.get("inject_mental_models", True):
-                mm_context = await self._get_mental_models_context()
-                if mm_context:
-                    parts.append(f"用户画像：\n{mm_context}")
+                # 群聊中默认不注入 mental model（减少上下文长度）
+                inject_mm = self.config.get("group_inject_mm", False) if is_group else True
+                if inject_mm:
+                    mm_context = await self._get_mental_models_context()
+                    if mm_context:
+                        parts.append(f"用户画像：\n{mm_context}")
 
             if parts:
                 event.llm_request.context.append(
@@ -364,7 +520,7 @@ class HindsightPlugin(Star):
                         "content": "以下是与用户相关的背景信息，可作为参考：\n\n" + "\n\n".join(parts),
                     }
                 )
-                logger.debug(f"注入 {len(memories) if memories else 0} 条记忆 + Mental Model 到上下文")
+                logger.debug(f"注入 {len(memories) if memories else 0} 条记忆到上下文 (群聊={is_group})")
 
         except Exception as e:
             logger.error(f"记忆回忆失败: {e}")
@@ -380,6 +536,12 @@ class HindsightPlugin(Star):
         try:
             session_id = event.session_id
             user_msg = self._user_msg_cache.pop(session_id, event.message_str)
+            is_group = self._is_group_chat(event)
+
+            # 群聊存储过滤
+            if is_group and not self._should_store_group_msg(event, user_msg):
+                self._stats["group_skipped"] += 1
+                return
 
             # 尝试获取 bot 回复（取决于配置）
             bot_reply = ""
@@ -390,6 +552,10 @@ class HindsightPlugin(Star):
                 except Exception:
                     pass
 
+            # 格式化内容（群聊添加发言人）
+            if is_group:
+                user_msg = self._format_group_content(event, user_msg)
+
             # 构建完整对话内容
             if user_msg and bot_reply:
                 content = f"用户: {user_msg}\n助手: {bot_reply}"
@@ -398,19 +564,27 @@ class HindsightPlugin(Star):
             else:
                 return
 
+            # 群聊消息添加 group 标签
+            tags = ["conversation"]
+            if is_group:
+                tags.append("group")
+
             # fire-and-forget：不阻塞响应发送
-            asyncio.create_task(self._retain_async(content, event))
+            asyncio.create_task(self._retain_async(content, event, tags))
+
+            if is_group:
+                self._stats["group_stored"] += 1
 
         except Exception as e:
             logger.error(f"记忆存储失败: {e}")
 
-    async def _retain_async(self, content: str, event: AstrMessageEvent):
+    async def _retain_async(self, content: str, event: AstrMessageEvent, tags: list[str] | None = None):
         """异步存储记忆（不阻塞主流程）"""
         try:
             await self.hindsight.retain(
                 content=content,
                 bank_id=self.bank_id,
-                tags=["conversation"],
+                tags=tags or ["conversation"],
                 metadata=self._get_event_metadata(event),
             )
             logger.debug(f"已存储对话记忆: {content[:80]}...")
@@ -663,12 +837,21 @@ class HindsightPlugin(Star):
                 pass
 
             # 插件性能统计
+            total_recall = self._stats['recall_hits'] + self._stats['recall_misses']
             output += "\n⚡ 插件性能:\n"
             output += f"  • Recall 缓存: {self._recall_cache.size} 条\n"
             output += f"  • MM 缓存: {self._mm_cache.size} 条\n"
-            output += f"  • Recall 命中率: {self._stats['recall_hits']}/{self._stats['recall_hits'] + self._stats['recall_misses']}\n"
-            output += f"  • MM 命中率: {self._stats['mm_hits']}/{self._stats['mm_hits'] + self._stats['mm_misses']}\n"
+            if total_recall > 0:
+                hit_rate = self._stats['recall_hits'] / total_recall * 100
+                output += f"  • Recall 命中率: {self._stats['recall_hits']}/{total_recall} ({hit_rate:.0f}%)\n"
+            mm_total = self._stats['mm_hits'] + self._stats['mm_misses']
+            if mm_total > 0:
+                mm_rate = self._stats['mm_hits'] / mm_total * 100
+                output += f"  • MM 命中率: {self._stats['mm_hits']}/{mm_total} ({mm_rate:.0f}%)\n"
             output += f"  • Retain 队列: {self.hindsight.queue_size} 条\n"
+            if self._stats['group_stored'] or self._stats['group_skipped']:
+                output += f"  • 群聊存储: {self._stats['group_stored']} 条\n"
+                output += f"  • 群聊跳过: {self._stats['group_skipped']} 条\n"
 
             yield event.plain_result(output.strip())
 

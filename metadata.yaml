@@ -1,7 +1,7 @@
 name: astrbot_plugin_hindsight
 desc: Hindsight 长期记忆系统集成，支持自动记忆提取、智能回忆和手动管理
 author: aimercat
-version: 1.2.0
+version: 1.3.0
 display_name: Hindsight 记忆助手
 short_desc: 让机器人记住对话中的重要信息
 support_platforms: [telegram, discord, lark, qq, wechat]

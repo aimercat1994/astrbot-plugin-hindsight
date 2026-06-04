@@ -473,6 +473,96 @@ for model in BANK_CONFIG.get("mental_models", []):
 
 ---
 
+### 3.15 第十五阶段：群聊优化（v1.3.0）
+
+**时间**：2026-06-04
+
+**背景**：AstrBot 通过 NapCat 接入个人 QQ，定位为个人助手+赛博群友，需要针对群聊场景优化
+
+**问题**：
+- 每条群消息都触发 recall → API 风暴
+- 每条群消息都存储 → 记忆库被刷屏
+- 存储不含发言人名字 → 回忆时不知道谁说的
+- 无频率限制 → 活跃群 recall 太频繁
+- 无私聊/群聊差异化 → 行为相同
+
+**解决方案**：
+
+#### 1. 群聊存储模式（`group_store_mode`）
+```python
+def _should_store_group_msg(self, event, content):
+    mode = self.config.get("group_store_mode", "smart")
+    if mode == "all": return not self._is_group_noise(content)
+    if mode == "bot_only": return True  # bot 已回复
+    if mode == "smart":
+        if self._is_group_noise(content): return False
+        if len(content) > 30: return True
+        if "？" in content or "?" in content: return True
+        return True
+```
+
+#### 2. 群聊回忆模式（`group_recall_mode`）
+```python
+def _should_recall_group(self, event):
+    mode = self.config.get("group_recall_mode", "smart")
+    if mode == "always": return True
+    if mode == "bot_only": return self._is_bot_mentioned(event)
+    if mode == "smart":
+        if self._is_bot_mentioned(event): return True
+        if len(event.message_str) > 20: return True
+        if "？" in event.message_str: return True
+        return False
+```
+
+#### 3. 群聊频率限制
+```python
+def _check_group_rate_limit(self, group_id):
+    now = time.monotonic()
+    last_ts = self._group_recall_ts.get(group_id, 0)
+    if now - last_ts < self._group_recall_interval:
+        return False  # 限流
+    self._group_recall_ts[group_id] = now
+    return True
+```
+
+#### 4. 噪声过滤
+```python
+GROUP_NOISE_PATTERNS = [
+    "[图片]", "[表情]", "[语音]", "[视频]", "[文件]",
+    "[动画表情]", "[QQ表情]", "[贴纸]",
+    "撤回了一条消息", "加入了群聊", "退出了群聊",
+]
+
+def _is_group_noise(self, content):
+    if len(content.strip()) < 6: return True  # 短消息
+    for pattern in GROUP_NOISE_PATTERNS:
+        if pattern in content: return True
+    return False
+```
+
+#### 5. 群聊发言人标注
+```python
+def _format_group_content(self, event, content):
+    user_name = event.get_sender_name()
+    if event.get_group_id() and user_name:
+        return f"[{user_name}] {content}"
+    return content
+```
+
+#### 6. 差异化配置
+- 群聊默认更低的相关度阈值（0.5 vs 0.7）
+- 群聊默认不注入 Mental Model（减少上下文长度）
+- stats 命令展示群聊存储/跳过统计
+
+**新增配置**：
+- `group_store_mode`: 群聊存储模式（all/bot_only/smart）
+- `group_recall_mode`: 群聊回忆模式（always/bot_only/smart）
+- `group_recall_interval`: 群聊回忆最小间隔（默认 5s）
+- `group_min_relevance`: 群聊相关度阈值（默认 0.5）
+- `group_inject_mm`: 群聊注入用户画像（默认关闭）
+
+---
+
 ## 4. 关键设计决策
 
 ### 4.1 为什么删除 EXTRACTION_PROMPT？
@@ -509,6 +599,21 @@ for model in BANK_CONFIG.get("mental_models", []):
 - Hindsight API 的 create_mental_model 不检查名称唯一性
 - 每次重启都会创建重复模型（观察到 12 个重复模型）
 - 先 list 检查 existing_names 集合，跳过已存在的
+
+### 4.8 为什么群聊默认 smart 模式而不是 always？
+- 群消息量大，每条都 recall 会导致 API 风暴
+- 群聊中大部分消息是闲聊/表情包，recall 价值低
+- smart 模式只在 bot 被触发或消息有价值时才 recall
+
+### 4.9 为什么群聊存储时添加发言人名字？
+- 群聊是多人对话，记忆需要区分谁说的
+- 存储为 `[用户名] 消息内容` 格式，recall 时能匹配到具体发言人
+- 便于 Mental Model 提取不同用户的偏好
+
+### 4.10 为什么群聊默认不注入 Mental Model？
+- Mental Model 内容较长，会占用大量 LLM 上下文
+- 群聊回复通常较短，不需要深度个性化
+- 用户可通过 `group_inject_mm=true` 开启
 
 ---
 
@@ -675,6 +780,25 @@ curl -X POST http://192.168.1.10:8888/v1/default/banks/astrbot/mental-models/{id
 
 ## 9. 版本历史
 
+### v1.3.0 (2026-06-04)
+**群聊优化**
+
+新增：
+- `group_store_mode` - 群聊存储模式（all/bot_only/smart）
+- `group_recall_mode` - 群聊回忆模式（always/bot_only/smart）
+- `group_recall_interval` - 群聊回忆最小间隔（默认 5s）
+- `group_min_relevance` - 群聊相关度阈值（默认 0.5）
+- `group_inject_mm` - 群聊注入用户画像（默认关闭）
+- 群聊噪声过滤（短消息、表情包、系统消息）
+- 群聊发言人标注（存储时添加 [用户名] 前缀）
+- 群聊频率限制（per-group 限流）
+- stats 命令展示群聊存储/跳过统计
+
+改进：
+- 私聊/群聊差异化行为
+- 群聊默认不注入 Mental Model（减少上下文长度）
+- 群聊使用更低的相关度阈值（更宽泛地回忆）
+
 ### v1.2.0 (2026-06-04)
 **性能优化 + Mental Model 上下文注入**
 
@@ -767,6 +891,11 @@ curl -X POST http://192.168.1.10:8888/v1/default/banks/astrbot/mental-models/{id
   "inject_mental_models": true,
   "cache_ttl": 300,
   "recall_cache_ttl": 60,
+  "group_store_mode": "smart",
+  "group_recall_mode": "smart",
+  "group_recall_interval": 5.0,
+  "group_min_relevance": 0.5,
+  "group_inject_mm": false,
   "import_history_on_load": false,
   "import_history_limit": 100,
   "import_concurrency": 5,

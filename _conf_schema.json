@@ -46,7 +46,7 @@
     "hint": "每次注入的最大记忆条数（1-20）"
   },
   "min_relevance": {
-    "description": "最小相关度阈值",
+    "description": "最小相关度阈值（私聊）",
     "type": "float",
     "default": 0.7,
     "slider": {
@@ -54,7 +54,64 @@
       "max": 1.0,
       "step": 0.05
     },
-    "hint": "低于此阈值的记忆不会注入，越高越严格"
+    "hint": "私聊中低于此阈值的记忆不会注入，越高越严格"
+  },
+  "inject_mental_models": {
+    "description": "注入用户画像到上下文（私聊）",
+    "type": "bool",
+    "default": true,
+    "hint": "私聊时自动注入 Mental Model 摘要（用户画像等），关闭可减少上下文长度"
+  },
+  "cache_ttl": {
+    "description": "Mental Model 缓存时间（秒）",
+    "type": "int",
+    "default": 300,
+    "hint": "Mental Model 内容缓存时长，越长越省 API 调用，越短越实时"
+  },
+  "recall_cache_ttl": {
+    "description": "Recall 结果缓存时间（秒）",
+    "type": "int",
+    "default": 60,
+    "hint": "相同查询的 recall 结果缓存时长，避免短时间内重复查询"
+  },
+  "group_store_mode": {
+    "description": "群聊存储模式",
+    "type": "string",
+    "default": "smart",
+    "options": ["all", "bot_only", "smart"],
+    "hint": "all=存储所有群消息, bot_only=仅存储 bot 参与的对话, smart=智能过滤噪声",
+    "obvious_hint": true
+  },
+  "group_recall_mode": {
+    "description": "群聊回忆模式",
+    "type": "string",
+    "default": "smart",
+    "options": ["always", "bot_only", "smart"],
+    "hint": "always=每条消息都回忆, bot_only=仅 bot 被触发时, smart=被 @ 或消息较长时",
+    "obvious_hint": true
+  },
+  "group_recall_interval": {
+    "description": "群聊回忆最小间隔（秒）",
+    "type": "float",
+    "default": 5.0,
+    "hint": "同一群内两次 recall 的最小间隔，防止活跃群频繁调用 API"
+  },
+  "group_min_relevance": {
+    "description": "群聊最小相关度阈值",
+    "type": "float",
+    "default": 0.5,
+    "slider": {
+      "min": 0.0,
+      "max": 1.0,
+      "step": 0.05
+    },
+    "hint": "群聊中相关度阈值（通常比私聊低，更宽泛地回忆）"
+  },
+  "group_inject_mm": {
+    "description": "群聊注入用户画像",
+    "type": "bool",
+    "default": false,
+    "hint": "群聊时是否注入 Mental Model（默认关闭，减少上下文长度）"
   },
   "import_history_on_load": {
     "description": "启动时自动导入历史对话",
@@ -73,24 +130,6 @@
     "type": "int",
     "default": 5,
     "hint": "批量导入时的最大并发请求数，过高可能触发限流"
-  },
-  "inject_mental_models": {
-    "description": "注入用户画像到上下文",
-    "type": "bool",
-    "default": true,
-    "hint": "自动回忆时同时注入 Mental Model 摘要（用户画像等），关闭可减少上下文长度"
-  },
-  "cache_ttl": {
-    "description": "Mental Model 缓存时间（秒）",
-    "type": "int",
-    "default": 300,
-    "hint": "Mental Model 内容缓存时长，越长越省 API 调用，越短越实时"
-  },
-  "recall_cache_ttl": {
-    "description": "Recall 结果缓存时间（秒）",
-    "type": "int",
-    "default": 60,
-    "hint": "相同查询的 recall 结果缓存时长，避免短时间内重复查询"
   },
   "exclude_groups": {
     "description": "排除的群组 ID",

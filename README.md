@@ -1,6 +1,6 @@
 # AstrBot Hindsight 记忆助手
 
-[Hindsight](https://github.com/vectorize-io/hindsight) 长期记忆系统集成插件，让 AstrBot 机器人拥有跨会话记忆能力。
+[Hindsight](https://github.com/vectorize-io/hindsight) 长期记忆系统集成插件，让 AstrBot 机器人拥有跨会话记忆能力。支持私聊和群聊场景，群聊智能过滤噪声、频率限制、差异化行为。
 
 ## ✨ 功能特性
 
@@ -9,6 +9,7 @@
 - **手动记忆管理** - 手动存储、搜索、删除记忆
 - **Mental Models** - 用户画像、待办事项等心智模型查询与刷新
 - **综合记忆问答** - 结合记忆检索和心智模型的智能问答
+- **群聊优化** - 智能噪声过滤、频率限制、差异化存储/回忆策略
 - **历史对话导入** - 一键导入 AstrBot 历史对话到 Hindsight（支持并发控制）
 - **Dashboard 配置** - 可视化配置界面，无需手动编辑文件
 - **性能优化** - 连接池复用、TTL 缓存、fire-and-forget、批量 retain
@@ -48,8 +49,28 @@ git clone https://github.com/aimercat1994/astrbot-plugin-hindsight.git
 | `retain_bot_replies` | 存储助手回复（关闭则仅存用户消息） | ✅ 开启 |
 | `auto_recall` | 自动记忆回忆 | ✅ 开启 |
 | `max_recall_results` | 每次注入的最大记忆条数 | 5 |
-| `min_relevance` | 最小相关度阈值（0-1，滑块调节） | 0.7 |
-| `inject_mental_models` | 注入用户画像到 LLM 上下文 | ✅ 开启 |
+| `min_relevance` | 最小相关度阈值（私聊，0-1，滑块调节） | 0.7 |
+| `inject_mental_models` | 私聊时注入用户画像到上下文 | ✅ 开启 |
+
+### 群聊优化
+
+| 配置项 | 说明 | 默认值 |
+|--------|------|--------|
+| `group_store_mode` | 群聊存储模式 | `smart` |
+| `group_recall_mode` | 群聊回忆模式 | `smart` |
+| `group_recall_interval` | 群聊回忆最小间隔（秒） | 5.0 |
+| `group_min_relevance` | 群聊相关度阈值（0-1，滑块） | 0.5 |
+| `group_inject_mm` | 群聊注入用户画像 | ❌ 关闭 |
+
+**存储模式说明：**
+- `all` - 存储所有群消息（过滤噪声后）
+- `bot_only` - 仅存储 bot 参与的对话
+- `smart` - 智能模式：过滤噪声 + 长消息 + 问句 + bot 参与
+
+**回忆模式说明：**
+- `always` - 每条群消息都触发 recall（消耗较大）
+- `bot_only` - 仅 bot 被 @ 或回复时触发
+- `smart` - 被 @ 或消息较长或含问号时触发
 
 ### 性能调优
 
@@ -86,7 +107,7 @@ git clone https://github.com/aimercat1994/astrbot-plugin-hindsight.git
 /hindsight refresh [名称]       # 手动刷新 Mental Model
 /hindsight list [数量]          # 查看最近记忆
 /hindsight delete <ID>         # 删除指定记忆
-/hindsight stats               # 查看记忆统计
+/hindsight stats               # 查看记忆统计（含群聊性能指标）
 /hindsight init                # 初始化/重置记忆库配置
 /hindsight import [数量] [force] # 导入 AstrBot 历史对话
 /hindsight reset_import        # 重置导入状态
@@ -119,7 +140,7 @@ git clone https://github.com/aimercat1994/astrbot-plugin-hindsight.git
 # 强制重新导入（忽略已导入记录）
 /hindsight import 100 true
 
-# 查看记忆统计
+# 查看记忆统计（含群聊性能指标）
 /hindsight stats
 ```
 
@@ -133,22 +154,29 @@ git clone https://github.com/aimercat1994/astrbot-plugin-hindsight.git
 ```
 用户消息 → AstrBot 插件
               ↓
+    ┌─────────┴─────────┐
+    ↓                   ↓
+ 私聊模式            群聊模式
+    ↓                   ↓
+ 总是 recall        smart 过滤 + 频率限制
+ 总是 store         智能存储（过滤噪声）
+ 注入 MM            默认不注入 MM
+    ↓                   ↓
          ┌────┴────┐
          ↓         ↓
     自动回忆    自动存储
    (on_request) (on_response)
          ↓         ↓
-   注入上下文   存储到 Hindsight
-         ↓         ↓
-      LLM 生成回复  缓存用户消息配对 bot 回复
+   注入上下文   存储到 Hindsight（fire-and-forget）
+         ↓
+      LLM 生成回复
 ```
 
-- **自动回忆**：在 LLM 请求前，从 Hindsight 检索相关记忆 + 用户画像注入上下文（带缓存）
-- **自动存储**：在 LLM 响应后，fire-and-forget 存储用户消息 + 助手回复到 Hindsight
-- **手动管理**：支持手动存储、搜索、删除记忆
-- **心智模型**：查询和刷新 Mental Models（用户画像、待办事项等）
-- **历史导入**：遍历 AstrBot 对话历史，批量并发导入到 Hindsight
-- **性能优化**：连接池复用、TTL 缓存、批量 retain 队列、后台清理
+- **私聊**：全量 recall + MM 注入 + 全量存储
+- **群聊**：smart 过滤 + 频率限制 + 差异化存储
+- **群聊噪声过滤**：自动跳过短消息、表情包、系统消息
+- **群聊发言人**：存储时自动添加 `[用户名]` 前缀
+- **性能优化**：连接池复用、TTL 缓存、fire-and-forget、批量 retain
 
 ## 🔧 常见问题
 
@@ -157,6 +185,19 @@ git clone https://github.com/aimercat1994/astrbot-plugin-hindsight.git
 ```bash
 /hindsight health
 ```
+
+### Q: 群聊消息太多，记忆库被刷屏了？
+
+将 `group_store_mode` 设为 `smart` 或 `bot_only`，自动过滤噪声。
+
+### Q: 群聊 recall 太频繁，API 压力大？
+
+1. 将 `group_recall_mode` 设为 `smart` 或 `bot_only`
+2. 增大 `group_recall_interval`（如 10 秒）
+
+### Q: 群聊中想注入用户画像？
+
+将 `group_inject_mm` 开启（会增加上下文长度）。
 
 ### Q: 导入历史对话失败怎么办？
 
@@ -173,10 +214,6 @@ git clone https://github.com/aimercat1994/astrbot-plugin-hindsight.git
 /hindsight init
 ```
 
-### Q: 如何排除特定群组不记录记忆？
-
-在插件设置中添加群组 ID 到 `exclude_groups` 列表。
-
 ### Q: 只想存储用户消息，不存储助手回复？
 
 在设置中关闭 `retain_bot_replies` 开关。
@@ -189,4 +226,4 @@ MIT License
 
 - [AstrBot](https://github.com/Soulter/AstrBot)
 - [Hindsight](https://github.com/vectorize-io/hindsight)
-- [插件设计文档](https://github.com/aimercat1994/astrbot-plugin-hindsight/blob/main/DEVELOPMENT.md)
+- [插件开发文档](https://github.com/aimercat1994/astrbot-plugin-hindsight/blob/main/DEVELOPMENT.md)
