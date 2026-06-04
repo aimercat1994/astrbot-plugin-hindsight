@@ -369,6 +369,110 @@ await asyncio.gather(*tasks)
 
 ---
 
+### 3.13 第十三阶段：性能优化（v1.2.0）
+
+**时间**：2026-06-04
+
+**问题**：
+- on_response 中 retain 阻塞响应发送
+- 每次 on_request 都从 API 拉取 Mental Model
+- 相同查询短时间内重复调用 recall API
+- user_msg_cache 无限增长可能导致内存泄漏
+
+**解决方案**：
+
+#### 1. TTL 缓存（utils/ttl_cache.py）
+```python
+class TTLCache:
+    def __init__(self, ttl: int = 300):
+        self._cache: dict[str, tuple[float, Any]] = {}
+        self._ttl = ttl
+
+    def get(self, key: str) -> Optional[Any]:
+        if key in self._cache:
+            ts, val = self._cache[key]
+            if time.monotonic() - ts < self._ttl:
+                return val
+            del self._cache[key]
+        return None
+```
+
+#### 2. Fire-and-forget retain
+```python
+@filter.on_llm_response()
+async def on_response(self, event, result):
+    # 不再 await retain，改用 create_task
+    asyncio.create_task(self._retain_async(content, event))
+```
+
+#### 3. 批量 retain 队列
+```python
+class HindsightClient:
+    def __init__(self, ...):
+        self._retain_queue: List[Dict] = []
+        self._batch_size = 10
+        self._batch_interval = 2.0  # 秒
+
+    async def retain(self, content, ..., batch=False):
+        if batch:
+            self._retain_queue.append(item)
+            if len(self._retain_queue) >= self._batch_size:
+                await self._flush_retain_queue()
+```
+
+#### 4. Mental Model 上下文注入
+```python
+async def _get_mental_models_context(self) -> str:
+    cached = self._mm_cache.get(cache_key)
+    if cached:
+        return cached
+    models = await self.hindsight.list_mental_models(...)
+    context = format_models(models)
+    self._mm_cache.set(cache_key, context)
+    return context
+```
+
+#### 5. 后台清理
+```python
+async def _periodic_cleanup(self):
+    while True:
+        await asyncio.sleep(300)  # 每 5 分钟
+        self._mm_cache.cleanup()
+        self._recall_cache.cleanup()
+        if len(self._user_msg_cache) > 1000:
+            # 保留最后 500 条
+```
+
+**新增配置**：
+- `inject_mental_models`: 是否注入用户画像到上下文（默认开启）
+- `cache_ttl`: Mental Model 缓存时长（默认 300s）
+- `recall_cache_ttl`: Recall 结果缓存时长（默认 60s）
+
+---
+
+### 3.14 第十四阶段：Mental Model 去重修复
+
+**时间**：2026-06-04
+
+**问题**：每次 AstrBot 重启都会创建新的 Mental Models，导致出现 12 个重复模型（6 对）
+
+**原因**：`create_mental_model` API 不检查名称唯一性，总是创建新模型
+
+**解决方案**：创建前先 list 检查是否已存在同名模型
+```python
+existing_models = await self.hindsight.list_mental_models(bank_id=self.bank_id)
+existing_names = {m.get("name") for m in existing_models}
+
+for model in BANK_CONFIG.get("mental_models", []):
+    if model["name"] in existing_names:
+        continue  # 已存在，跳过
+    await self.hindsight.create_mental_model(...)
+```
+
+**清理**：删除了 10 个重复的 Mental Models，保留原始 2 个
+
+---
+
 ## 4. 关键设计决策
 
 ### 4.1 为什么删除 EXTRACTION_PROMPT？
@@ -390,6 +494,21 @@ await asyncio.gather(*tasks)
 - `on_llm_request` 有用户消息，`on_llm_response` 有 bot 回复
 - 同一轮对话的两个事件需要关联
 - 用 session_id 作为缓存 key
+
+### 4.5 为什么用 fire-and-forget 存储记忆？
+- retain 是异步操作（Hindsight async=True），不需要等结果
+- on_response 是关键路径，阻塞会延迟用户看到回复
+- create_task 后台执行，失败只记日志不影响用户体验
+
+### 4.6 为什么缓存 Mental Model？
+- Mental Model 内容变化慢（每次 consolidation 才更新）
+- on_request 是每个消息的必经路径，频繁调用 API 增加延迟
+- TTL 300s 缓存平衡了实时性和性能
+
+### 4.7 为什么创建前检查 Mental Model 是否存在？
+- Hindsight API 的 create_mental_model 不检查名称唯一性
+- 每次重启都会创建重复模型（观察到 12 个重复模型）
+- 先 list 检查 existing_names 集合，跳过已存在的
 
 ---
 
@@ -556,6 +675,29 @@ curl -X POST http://192.168.1.10:8888/v1/default/banks/astrbot/mental-models/{id
 
 ## 9. 版本历史
 
+### v1.2.0 (2026-06-04)
+**性能优化 + Mental Model 上下文注入**
+
+新增：
+- `utils/ttl_cache.py` - TTL 缓存工具类
+- `inject_mental_models` 配置项 - 控制是否注入用户画像到上下文
+- `cache_ttl` 配置项 - Mental Model 缓存时长（默认 300s）
+- `recall_cache_ttl` 配置项 - Recall 结果缓存时长（默认 60s）
+- `batch` 参数 - retain 支持批量队列模式
+- 后台清理任务（每 5 分钟清理过期缓存）
+- stats 命令展示缓存命中率、队列大小等性能指标
+
+改进：
+- on_response retain 改为 fire-and-forget（不阻塞响应发送）
+- 批量 retain 队列（满 10 条或 2s 自动 flush）
+- Mental Model 上下文自动注入到 LLM（带 TTL 缓存）
+- Recall 结果缓存（避免短时间重复查询）
+- user_msg_cache 超过 1000 条自动裁剪
+- terminate 时刷新未发送的队列
+
+修复：
+- 防止重复创建 Mental Models（创建前检查是否已存在同名模型）
+
 ### v1.1.0 (2026-06-04)
 **命令增强 + 连接池优化 + 完整对话存储**
 
@@ -622,6 +764,9 @@ curl -X POST http://192.168.1.10:8888/v1/default/banks/astrbot/mental-models/{id
   "auto_recall": true,
   "max_recall_results": 5,
   "min_relevance": 0.7,
+  "inject_mental_models": true,
+  "cache_ttl": 300,
+  "recall_cache_ttl": 60,
   "import_history_on_load": false,
   "import_history_limit": 100,
   "import_concurrency": 5,

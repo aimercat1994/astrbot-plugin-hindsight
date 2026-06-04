@@ -5,12 +5,13 @@
 ## ✨ 功能特性
 
 - **自动记忆存储** - 对话时自动存储用户消息和助手回复到 Hindsight
-- **智能回忆注入** - 对话时自动注入相关历史记忆作为上下文
+- **智能回忆注入** - 对话时自动注入相关历史记忆 + 用户画像作为上下文
 - **手动记忆管理** - 手动存储、搜索、删除记忆
 - **Mental Models** - 用户画像、待办事项等心智模型查询与刷新
 - **综合记忆问答** - 结合记忆检索和心智模型的智能问答
 - **历史对话导入** - 一键导入 AstrBot 历史对话到 Hindsight（支持并发控制）
 - **Dashboard 配置** - 可视化配置界面，无需手动编辑文件
+- **性能优化** - 连接池复用、TTL 缓存、fire-and-forget、批量 retain
 
 ## 📦 安装
 
@@ -48,6 +49,14 @@ git clone https://github.com/aimercat1994/astrbot-plugin-hindsight.git
 | `auto_recall` | 自动记忆回忆 | ✅ 开启 |
 | `max_recall_results` | 每次注入的最大记忆条数 | 5 |
 | `min_relevance` | 最小相关度阈值（0-1，滑块调节） | 0.7 |
+| `inject_mental_models` | 注入用户画像到 LLM 上下文 | ✅ 开启 |
+
+### 性能调优
+
+| 配置项 | 说明 | 默认值 |
+|--------|------|--------|
+| `cache_ttl` | Mental Model 缓存时长（秒） | 300 |
+| `recall_cache_ttl` | Recall 结果缓存时长（秒） | 60 |
 
 ### 历史导入
 
@@ -134,11 +143,12 @@ git clone https://github.com/aimercat1994/astrbot-plugin-hindsight.git
       LLM 生成回复  缓存用户消息配对 bot 回复
 ```
 
-- **自动回忆**：在 LLM 请求前，从 Hindsight 检索相关记忆注入上下文
-- **自动存储**：在 LLM 响应后，将用户消息 + 助手回复存储到 Hindsight
+- **自动回忆**：在 LLM 请求前，从 Hindsight 检索相关记忆 + 用户画像注入上下文（带缓存）
+- **自动存储**：在 LLM 响应后，fire-and-forget 存储用户消息 + 助手回复到 Hindsight
 - **手动管理**：支持手动存储、搜索、删除记忆
 - **心智模型**：查询和刷新 Mental Models（用户画像、待办事项等）
 - **历史导入**：遍历 AstrBot 对话历史，批量并发导入到 Hindsight
+- **性能优化**：连接池复用、TTL 缓存、批量 retain 队列、后台清理
 
 ## 🔧 常见问题
 
