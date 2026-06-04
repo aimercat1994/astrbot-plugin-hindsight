@@ -1,7 +1,7 @@
 # Hindsight AstrBot 插件开发日志
 
-**开发日期**：2026-06-01  
-**开发者**：aimercat + Hermes Agent  
+**开发日期**：2026-06-01 ~ 2026-06-04
+**开发者**：aimercat + Hermes Agent
 **仓库**：https://github.com/aimercat1994/astrbot-plugin-hindsight
 
 ---
@@ -26,7 +26,7 @@
 ```
 AstrBot 插件 (事件监听 + 命令处理)
         ↓
-Hindsight API Client (httpx 异步调用)
+Hindsight API Client (httpx 异步调用 + 连接池)
         ↓
 Hindsight API (:8888) → PostgreSQL (pgvector)
 ```
@@ -39,13 +39,14 @@ astrbot_plugin_hindsight/
 ├── _conf_schema.json        # 配置 Schema
 ├── requirements.txt         # 依赖：httpx
 ├── README.md                # 说明文档
+├── DEVELOPMENT.md           # 开发日志
 └── utils/
     ├── __init__.py
     └── hindsight_client.py  # API 客户端
 ```
 
 ### 2.2 核心组件
-- **HindsightClient**: 封装 Hindsight REST API 调用
+- **HindsightClient**: 封装 Hindsight REST API 调用（连接池复用）
 - **HindsightPlugin**: AstrBot 插件主类，处理事件和命令
 - **BANK_CONFIG**: 预定义的 bank 配置模板
 
@@ -53,9 +54,9 @@ astrbot_plugin_hindsight/
 
 ## 3. 开发过程
 
-### 3.1 第一阶段：基础框架搭建
+### 3.1 第一阶段：基础框架搭建（v1.0.0）
 
-**时间**：10:00-10:30
+**时间**：2026-06-01 10:00-10:30
 
 **任务**：
 - 创建插件目录结构
@@ -71,11 +72,11 @@ class HindsightClient:
         self.headers = {"Content-Type": "application/json"}
         if api_key:
             self.headers["Authorization"] = f"Bearer {api_key}"
-    
+
     async def retain(self, content: str, bank_id: str = "astrbot", ...):
         # 存储记忆
         ...
-    
+
     async def recall(self, query: str, bank_id: str = "astrbot", ...):
         # 检索记忆
         ...
@@ -90,9 +91,9 @@ class HindsightClient:
 
 ---
 
-### 3.2 第二阶段：命令组实现
+### 3.2 第二阶段：命令组实现（v1.0.0）
 
-**时间**：10:30-11:00
+**时间**：2026-06-01 10:30-11:00
 
 **任务**：
 - 实现 `/hindsight` 命令组
@@ -121,9 +122,9 @@ def hindsight_group(self):
 
 ---
 
-### 3.3 第三阶段：自动记忆功能
+### 3.3 第三阶段：自动记忆功能（v1.0.0）
 
-**时间**：11:00-11:30
+**时间**：2026-06-01 11:00-11:30
 
 **任务**：
 - 实现 `on_llm_request` 钩子：自动注入相关记忆
@@ -141,28 +142,11 @@ def hindsight_group(self):
 - 直接把用户消息传给 Hindsight retain，让它自己处理实体提取
 - 简化代码，减少依赖
 
-**最终实现**：
-```python
-@filter.on_llm_response()
-async def on_response(self, event: AstrMessageEvent):
-    """在 LLM 响应后存储对话记忆"""
-    if not self.config.get("auto_retain", True):
-        return
-    
-    content = f"用户: {event.message_str}"
-    await self.hindsight.retain(
-        content=content,
-        bank_id=self.bank_id,
-        tags=["conversation"],
-        metadata={...}
-    )
-```
-
 ---
 
-### 3.4 第四阶段：Bank 初始化
+### 3.4 第四阶段：Bank 初始化（v1.0.0）
 
-**时间**：11:30-12:00
+**时间**：2026-06-01 11:30-12:00
 
 **任务**：
 - 自动创建 Hindsight bank
@@ -172,42 +156,11 @@ async def on_response(self, event: AstrMessageEvent):
 - Health check 端点错误：使用 `/healthcheck` 返回 404
 - 正确端点是 `/health`
 
-**解决方案**：
-```python
-async def health_check(self) -> bool:
-    try:
-        async with httpx.AsyncClient() as client:
-            response = await client.get(f"{self.base_url}/health", timeout=5.0)
-            return response.status_code == 200
-    except Exception:
-        return False
-```
-
-**Bank 配置模板**：
-```python
-BANK_CONFIG = {
-    "mental_models": [
-        {
-            "id": "user-profile",
-            "name": "用户画像",
-            "source_query": "我们对这个用户了解什么？",
-            "max_tokens": 2048,
-        },
-        {
-            "id": "active-tasks",
-            "name": "待办事项与承诺",
-            "source_query": "用户当前在追踪什么任务？",
-            "max_tokens": 1024,
-        },
-    ],
-}
-```
-
 ---
 
-### 3.5 第五阶段：历史对话导入
+### 3.5 第五阶段：历史对话导入（v1.0.0）
 
-**时间**：12:00-13:00
+**时间**：2026-06-01 12:00-13:00
 
 **任务**：
 - 实现 `/hindsight import` 命令
@@ -236,49 +189,183 @@ if metadata:
 - 有些对话的 `content` 是 list 类型（包含文本和引用等）
 - 需要提取文本部分
 
-**解决方案**：
-```python
-if isinstance(content, list):
-    text_parts = []
-    for item in content:
-        if isinstance(item, dict) and item.get("type") == "text":
-            text_parts.append(item.get("text", ""))
-        elif isinstance(item, str):
-            text_parts.append(item)
-    content = " ".join(text_parts)
-```
-
 **导入结果**：
 - 成功导入 171 条消息
-- 只有 1 个对话的部分消息返回 422（可能是并发或临时性问题）
 
 ---
 
-### 3.6 第六阶段：Dashboard 配置
+### 3.6 第六阶段：Dashboard 配置（v1.0.0）
 
-**时间**：13:00-13:30
+**时间**：2026-06-01 13:00-13:30
 
 **任务**：
 - 添加 `import_history_on_load` 配置项
 - 添加 `import_history_limit` 配置项
 
-**配置 Schema**：
-```json
-{
-  "import_history_on_load": {
-    "description": "启动时自动导入历史",
-    "type": "bool",
-    "default": false,
-    "hint": "插件加载时自动导入 AstrBot 历史对话"
-  },
-  "import_history_limit": {
-    "description": "历史导入数量",
-    "type": "int",
-    "default": 100,
-    "hint": "自动导入时的最大对话数量"
-  }
-}
+---
+
+### 3.7 第七阶段：幂等导入修复（v1.0.0）
+
+**时间**：2026-06-01 14:00
+
+**问题**：每次 AstrBot 重启都会重复导入所有历史对话
+
+**解决方案**：
+- 本地 JSON 文件跟踪已导入的对话 ID (`imported_cids`)
+- 启动时跳过已导入对话
+- 添加 `force` 参数允许强制重新导入
+- 添加 `reset_import` 命令清除状态
+
+---
+
+### 3.8 第八阶段：v1.1.0 命令增强 + 连接池优化
+
+**时间**：2026-06-04
+
+**新增命令**：
+
+#### `/hindsight retain` - 手动存储记忆
+```python
+@hindsight_group.command("retain", alias={"存储记忆", "记住"})
+async def retain_memory(self, event: AstrMessageEvent, *, content: str):
+    await self.hindsight.retain(
+        content=content,
+        bank_id=self.bank_id,
+        tags=["manual"],
+        metadata=self._get_event_metadata(event),
+    )
+    yield event.plain_result(f"✅ 已记住：{content[:50]}")
 ```
+
+#### `/hindsight ask` - 综合记忆问答
+```python
+@hindsight_group.command("ask", alias={"问记忆", "记忆问答"})
+async def ask_memory(self, event: AstrMessageEvent, *, question: str):
+    # 并行获取 recall 结果和 mental models
+    recall_task = self.hindsight.recall(query=question, ...)
+    models_task = self.hindsight.list_mental_models(...)
+    results, models = await asyncio.gather(recall_task, models_task)
+    # 合并输出
+```
+
+#### `/hindsight reflect` - 查看 Mental Models
+```python
+@hindsight_group.command("reflect", alias={"画像", "用户画像", "心智模型"})
+async def reflect_memory(self, event: AstrMessageEvent, name: str = ""):
+    models = await self.hindsight.list_mental_models(bank_id=self.bank_id)
+    if name:
+        models = [m for m in models if name.lower() in m.get("name", "").lower()]
+    # 格式化输出
+```
+
+#### `/hindsight refresh` - 手动刷新 Mental Models
+```python
+@hindsight_group.command("refresh", alias={"刷新画像"})
+async def refresh_model(self, event: AstrMessageEvent, name: str = ""):
+    models = await self.hindsight.list_mental_models(bank_id=self.bank_id)
+    for model in models:
+        await self.hindsight.refresh_mental_model(model["id"], bank_id=self.bank_id)
+```
+
+---
+
+### 3.9 第九阶段：完整对话存储
+
+**时间**：2026-06-04
+
+**改进**：同时存储用户消息和 bot 回复
+
+**实现**：
+```python
+# on_llm_request 中缓存用户消息
+self._user_msg_cache[session_id] = event.message_str
+
+# on_llm_response 中配对存储
+user_msg = self._user_msg_cache.pop(session_id, event.message_str)
+bot_reply = result.get_plain_text() if self.config.get("retain_bot_replies", True) else ""
+
+if user_msg and bot_reply:
+    content = f"用户: {user_msg}\n助手: {bot_reply}"
+elif user_msg:
+    content = f"用户: {user_msg}"
+```
+
+**新增配置**：
+- `retain_bot_replies`: 控制是否存储助手回复（默认开启）
+
+---
+
+### 3.10 第十阶段：连接池优化
+
+**时间**：2026-06-04
+
+**问题**：每次 API 请求都创建新的 `httpx.AsyncClient`，TCP 连接开销大
+
+**解决方案**：
+```python
+class HindsightClient:
+    def __init__(self, base_url: str, api_key: Optional[str] = None):
+        self._client: Optional[httpx.AsyncClient] = None
+
+    def _get_client(self) -> httpx.AsyncClient:
+        if self._client is None or self._client.is_closed:
+            self._client = httpx.AsyncClient(
+                headers=self.headers,
+                timeout=httpx.Timeout(30.0, connect=10.0),
+                limits=httpx.Limits(
+                    max_connections=20,
+                    max_keepalive_connections=10,
+                    keepalive_expiry=30,
+                ),
+            )
+        return self._client
+
+    async def close(self):
+        if self._client and not self._client.is_closed:
+            await self._client.aclose()
+```
+
+**terminate 中关闭**：
+```python
+async def terminate(self):
+    await self.hindsight.close()
+```
+
+---
+
+### 3.11 第十一阶段：导入并发控制
+
+**时间**：2026-06-04
+
+**问题**：批量导入时无限制并发，可能触发 Hindsight 限流或 OOM
+
+**解决方案**：
+```python
+sem = asyncio.Semaphore(self.config.get("import_concurrency", 5))
+
+async def _import_msg(content: str, conv, msg_idx: int):
+    async with sem:
+        await self.hindsight.retain(...)
+
+# 批量并发执行
+tasks = [_import_msg(content, conv, msg_idx) for ...]
+await asyncio.gather(*tasks)
+```
+
+**新增配置**：
+- `import_concurrency`: 导入并发数（默认 5）
+
+---
+
+### 3.12 第十二阶段：Dashboard 设置增强
+
+**时间**：2026-06-04
+
+**改进**：
+- `min_relevance` 添加 slider 滑块（0-1, step 0.05）
+- 重要配置项添加 `obvious_hint` 高亮
+- 新增 `retain_bot_replies` 开关
+- 优化所有配置项的 hint 描述
 
 ---
 
@@ -294,10 +381,15 @@ if isinstance(content, list):
 - 用户消息包含更丰富的个人信息和偏好
 - 机器人回复可以由 LLM 根据上下文重新生成
 
-### 4.3 为什么使用 `async=True`？
-- 异步处理可以提高性能
-- 避免阻塞 AstrBot 主线程
-- Hindsight 后台处理实体提取和 embedding 生成
+### 4.3 为什么使用连接池？
+- 避免每次请求都创建/销毁 TCP 连接
+- 减少延迟，提高吞吐量
+- httpx.AsyncClient 支持 keep-alive
+
+### 4.4 为什么缓存用户消息配对 bot 回复？
+- `on_llm_request` 有用户消息，`on_llm_response` 有 bot 回复
+- 同一轮对话的两个事件需要关联
+- 用 session_id 作为缓存 key
 
 ---
 
@@ -314,6 +406,9 @@ GET    /health                                         # 健康检查
 PUT    /v1/default/banks/{bank_id}                     # 创建 bank
 PATCH  /v1/default/banks/{bank_id}/config             # 更新配置
 POST   /v1/default/banks/{bank_id}/mental-models      # 创建 mental model
+GET    /v1/default/banks/{bank_id}/mental-models      # 列出 mental models
+GET    /v1/default/banks/{bank_id}/mental-models/{id} # 获取 mental model
+POST   /v1/default/banks/{bank_id}/mental-models/{id}/refresh  # 刷新
 ```
 
 ### 5.2 请求格式
@@ -371,7 +466,10 @@ POST   /v1/default/banks/{bank_id}/mental-models      # 创建 mental model
 # 检查服务状态
 /hindsight health
 
-# 存储记忆
+# 手动存储记忆
+/hindsight retain 测试记忆内容
+
+# 搜索记忆
 /hindsight recall 测试
 
 # 查看记忆列表
@@ -381,16 +479,37 @@ POST   /v1/default/banks/{bank_id}/mental-models      # 创建 mental model
 /hindsight stats
 ```
 
-### 7.2 历史导入测试
+### 7.2 Mental Model 测试
+```bash
+# 查看所有 Mental Models
+/hindsight reflect
+
+# 查看指定模型
+/hindsight reflect 用户画像
+
+# 刷新 Mental Models
+/hindsight refresh
+```
+
+### 7.3 综合问答测试
+```bash
+# 综合问答
+/hindsight ask 用户的技术偏好是什么
+```
+
+### 7.4 历史导入测试
 ```bash
 # 手动导入
 /hindsight import 100
 
-# 自动导入（在 Dashboard 中开启）
-# 重启 AstrBot 观察日志
+# 强制重新导入
+/hindsight import 100 true
+
+# 重置导入状态
+/hindsight reset_import
 ```
 
-### 7.3 API 测试
+### 7.5 API 测试
 ```bash
 # 健康检查
 curl http://192.168.1.10:8888/health
@@ -404,6 +523,12 @@ curl -X POST http://192.168.1.10:8888/v1/default/banks/astrbot/memories \
 curl -X POST http://192.168.1.10:8888/v1/default/banks/astrbot/memories/recall \
   -H "Content-Type: application/json" \
   -d '{"query": "测试", "max_results": 5}'
+
+# 列出 Mental Models
+curl http://192.168.1.10:8888/v1/default/banks/astrbot/mental-models
+
+# 刷新 Mental Model
+curl -X POST http://192.168.1.10:8888/v1/default/banks/astrbot/mental-models/{id}/refresh
 ```
 
 ---
@@ -411,66 +536,76 @@ curl -X POST http://192.168.1.10:8888/v1/default/banks/astrbot/memories/recall \
 ## 8. 后续优化方向
 
 ### 8.1 功能增强
-- [ ] 支持导入机器人回复（可选配置）
 - [ ] 支持按时间范围导入
 - [ ] 支持按用户/群组过滤导入
 - [ ] 支持导出记忆到文件
 - [ ] 支持批量删除记忆
+- [ ] `/hindsight search` 按标签筛选记忆
 
 ### 8.2 性能优化
-- [ ] 批量导入时使用批量 API（如果 Hindsight 支持）
 - [ ] 添加导入进度条
 - [ ] 支持断点续传
-- [ ] 优化并发请求控制
+- [ ] 优化大量记忆时的 recall 性能
 
 ### 8.3 用户体验
 - [ ] 添加导入预览功能
 - [ ] 支持取消导入任务
-- [ ] 添加导入历史记录
 - [ ] 优化错误提示信息
-
-### 8.4 监控和日志
-- [ ] 添加导入统计面板
-- [ ] 记录导入失败的具体原因
-- [ ] 支持导出导入日志
 
 ---
 
-## 9. 参考资源
+## 9. 版本历史
 
-### 9.1 官方文档
+### v1.1.0 (2026-06-04)
+**命令增强 + 连接池优化 + 完整对话存储**
+
+新增：
+- `/hindsight retain` - 手动存储记忆
+- `/hindsight ask` - 综合记忆问答（recall + mental model）
+- `/hindsight reflect` - 查看 Mental Models
+- `/hindsight refresh` - 手动刷新 Mental Models
+- `retain_bot_replies` 配置项 - 控制是否存储助手回复
+- `import_concurrency` 配置项 - 导入并发控制
+
+改进：
+- 同时存储用户消息和 bot 回复（完整对话上下文）
+- HindsightClient 连接池复用（httpx.AsyncClient）
+- 导入并发控制（asyncio.Semaphore）
+- stats 命令展示 Mental Models 状态
+- Dashboard 设置增强（slider、obvious_hint）
+- terminate() 时正确关闭连接池
+
+### v1.0.0 (2026-06-01)
+**初始发布**
+
+功能：
+- 自动记忆存储（on_llm_response）
+- 自动记忆回忆（on_llm_request）
+- `/hindsight recall` - 搜索记忆
+- `/hindsight list` - 查看记忆列表
+- `/hindsight delete` - 删除记忆
+- `/hindsight stats` - 记忆统计
+- `/hindsight health` - 服务状态检查
+- `/hindsight init` - 初始化记忆库
+- `/hindsight import` - 导入历史对话
+- `/hindsight reset_import` - 重置导入状态
+- 自动创建 bank 和 Mental Models
+- 幂等导入（防止重启重复导入）
+- Dashboard 可视化配置
+
+---
+
+## 10. 参考资源
+
+### 10.1 官方文档
 - [AstrBot 插件开发文档](https://docs.astrbot.app/)
 - [Hindsight GitHub](https://github.com/vectorize-io/hindsight)
 - [AstrBot 插件模板](https://github.com/Soulter/helloworld)
 
-### 9.2 相关技能
-- `astrbot-plugin-dev`: AstrBot 插件开发全流程
-- `hindsight`: Hindsight 部署和集成
-
-### 9.3 项目文件
+### 10.2 项目文件
 - 设计文档：`/home/aimercat/hindsight-astrbot-plugin-design.md`
 - 插件目录：`~/data/plugins/astrbot_plugin_hindsight/`
 - GitHub 仓库：https://github.com/aimercat1994/astrbot-plugin-hindsight
-
----
-
-## 10. 开发时间线
-
-| 时间 | 任务 | 状态 |
-|------|------|------|
-| 10:00 | 创建项目结构 | ✅ |
-| 10:15 | 实现 HindsightClient | ✅ |
-| 10:30 | 实现命令组 | ✅ |
-| 10:45 | 实现自动记忆 | ✅ |
-| 11:00 | 实现 Bank 初始化 | ✅ |
-| 11:30 | 实现历史导入 | ✅ |
-| 12:00 | 修复 API 路径 | ✅ |
-| 12:30 | 修复 metadata 类型 | ✅ |
-| 13:00 | 添加 Dashboard 配置 | ✅ |
-| 13:30 | 编写 README | ✅ |
-| 14:00 | 推送到 GitHub | ✅ |
-
-**总开发时间**：约 4 小时
 
 ---
 
@@ -483,11 +618,13 @@ curl -X POST http://192.168.1.10:8888/v1/default/banks/astrbot/memories/recall \
   "hindsight_api_key": "",
   "bank_id": "astrbot",
   "auto_retain": true,
+  "retain_bot_replies": true,
   "auto_recall": true,
   "max_recall_results": 5,
   "min_relevance": 0.7,
   "import_history_on_load": false,
   "import_history_limit": 100,
+  "import_concurrency": 5,
   "exclude_groups": [],
   "exclude_users": []
 }
@@ -497,25 +634,14 @@ curl -X POST http://192.168.1.10:8888/v1/default/banks/astrbot/memories/recall \
 ```bash
 /hindsight health              # 检查服务状态
 /hindsight recall <关键词>      # 搜索记忆
+/hindsight retain <内容>        # 手动存储记忆
+/hindsight ask <问题>           # 综合记忆问答
+/hindsight reflect [名称]       # 查看 Mental Models
+/hindsight refresh [名称]       # 刷新 Mental Models
 /hindsight list [数量]          # 查看记忆列表
 /hindsight delete <ID>         # 删除记忆
-/hindsight stats               # 查看统计
-/hindsight init                # 初始化 bank
-/hindsight import [数量]        # 导入历史对话
+/hindsight stats               # 记忆统计
+/hindsight init                # 初始化记忆库
+/hindsight import [数量] [force] # 导入历史对话
+/hindsight reset_import        # 重置导入状态
 ```
-
-### 11.3 日志关键字
-```
-Hindsight 插件已加载
-已创建 bank 'astrbot'
-已创建 mental model: 用户画像
-已创建 mental model: 待办事项与承诺
-Bank 'astrbot' 初始化完成
-自动导入历史完成，共导入 XXX 条消息
-```
-
----
-
-**文档版本**：v1.0  
-**最后更新**：2026-06-01  
-**维护者**：aimercat

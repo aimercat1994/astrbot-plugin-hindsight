@@ -31,17 +31,36 @@ git clone https://github.com/aimercat1994/astrbot-plugin-hindsight.git
 
 进入 AstrBot Dashboard → 插件管理 → Hindsight 记忆助手 → 设置
 
+### 连接配置
+
 | 配置项 | 说明 | 默认值 |
 |--------|------|--------|
 | `hindsight_api_url` | Hindsight API 地址 | `http://192.168.1.10:8888` |
-| `bank_id` | 记忆库 ID | `astrbot` |
+| `hindsight_api_key` | API Key（留空不需要认证） | 空 |
+| `bank_id` | 记忆库 ID，隔离不同机器人记忆 | `astrbot` |
+
+### 记忆管理
+
+| 配置项 | 说明 | 默认值 |
+|--------|------|--------|
 | `auto_retain` | 自动记忆存储 | ✅ 开启 |
+| `retain_bot_replies` | 存储助手回复（关闭则仅存用户消息） | ✅ 开启 |
 | `auto_recall` | 自动记忆回忆 | ✅ 开启 |
-| `max_recall_results` | 最大回忆数量 | 5 |
-| `min_relevance` | 最小相关度阈值 | 0.7 |
-| `import_history_on_load` | 启动时自动导入历史 | ❌ 关闭 |
-| `import_history_limit` | 历史导入数量 | 100 |
-| `import_concurrency` | 导入并发数 | 5 |
+| `max_recall_results` | 每次注入的最大记忆条数 | 5 |
+| `min_relevance` | 最小相关度阈值（0-1，滑块调节） | 0.7 |
+
+### 历史导入
+
+| 配置项 | 说明 | 默认值 |
+|--------|------|--------|
+| `import_history_on_load` | 启动时自动导入历史对话 | ❌ 关闭 |
+| `import_history_limit` | 历史导入数量上限 | 100 |
+| `import_concurrency` | 导入并发请求数 | 5 |
+
+### 过滤规则
+
+| 配置项 | 说明 | 默认值 |
+|--------|------|--------|
 | `exclude_groups` | 排除的群组 ID | 空 |
 | `exclude_users` | 排除的用户 ID | 空 |
 
@@ -60,7 +79,7 @@ git clone https://github.com/aimercat1994/astrbot-plugin-hindsight.git
 /hindsight delete <ID>         # 删除指定记忆
 /hindsight stats               # 查看记忆统计
 /hindsight init                # 初始化/重置记忆库配置
-/hindsight import [数量]        # 导入 AstrBot 历史对话
+/hindsight import [数量] [force] # 导入 AstrBot 历史对话
 /hindsight reset_import        # 重置导入状态
 ```
 
@@ -88,6 +107,9 @@ git clone https://github.com/aimercat1994/astrbot-plugin-hindsight.git
 # 导入最近 200 条历史对话
 /hindsight import 200
 
+# 强制重新导入（忽略已导入记录）
+/hindsight import 100 true
+
 # 查看记忆统计
 /hindsight stats
 ```
@@ -108,8 +130,8 @@ git clone https://github.com/aimercat1994/astrbot-plugin-hindsight.git
    (on_request) (on_response)
          ↓         ↓
    注入上下文   存储到 Hindsight
-         ↓
-      LLM 生成回复
+         ↓         ↓
+      LLM 生成回复  缓存用户消息配对 bot 回复
 ```
 
 - **自动回忆**：在 LLM 请求前，从 Hindsight 检索相关记忆注入上下文
@@ -145,6 +167,10 @@ git clone https://github.com/aimercat1994/astrbot-plugin-hindsight.git
 
 在插件设置中添加群组 ID 到 `exclude_groups` 列表。
 
+### Q: 只想存储用户消息，不存储助手回复？
+
+在设置中关闭 `retain_bot_replies` 开关。
+
 ## 📄 开源协议
 
 MIT License
@@ -153,4 +179,4 @@ MIT License
 
 - [AstrBot](https://github.com/Soulter/AstrBot)
 - [Hindsight](https://github.com/vectorize-io/hindsight)
-- [插件设计文档](https://github.com/aimercat1994/astrbot-plugin-hindsight/blob/main/design.md)
+- [插件设计文档](https://github.com/aimercat1994/astrbot-plugin-hindsight/blob/main/DEVELOPMENT.md)
