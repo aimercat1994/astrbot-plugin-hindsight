@@ -4,11 +4,13 @@
 
 ## ✨ 功能特性
 
-- **自动记忆存储** - 对话时自动存储用户消息到 Hindsight
+- **自动记忆存储** - 对话时自动存储用户消息和助手回复到 Hindsight
 - **智能回忆注入** - 对话时自动注入相关历史记忆作为上下文
-- **历史对话导入** - 一键导入 AstrBot 历史对话到 Hindsight
+- **手动记忆管理** - 手动存储、搜索、删除记忆
+- **Mental Models** - 用户画像、待办事项等心智模型查询与刷新
+- **综合记忆问答** - 结合记忆检索和心智模型的智能问答
+- **历史对话导入** - 一键导入 AstrBot 历史对话到 Hindsight（支持并发控制）
 - **Dashboard 配置** - 可视化配置界面，无需手动编辑文件
-- **Mental Models** - 自动创建用户画像、待办事项等心智模型
 
 ## 📦 安装
 
@@ -39,7 +41,8 @@ git clone https://github.com/aimercat1994/astrbot-plugin-hindsight.git
 | `min_relevance` | 最小相关度阈值 | 0.7 |
 | `import_history_on_load` | 启动时自动导入历史 | ❌ 关闭 |
 | `import_history_limit` | 历史导入数量 | 100 |
-| `exclude_groups` | 掘除的群组 ID | 空 |
+| `import_concurrency` | 导入并发数 | 5 |
+| `exclude_groups` | 排除的群组 ID | 空 |
 | `exclude_users` | 排除的用户 ID | 空 |
 
 ## 🎮 使用
@@ -49,11 +52,16 @@ git clone https://github.com/aimercat1994/astrbot-plugin-hindsight.git
 ```bash
 /hindsight health              # 检查 Hindsight 服务状态
 /hindsight recall <关键词>      # 搜索相关记忆
+/hindsight retain <内容>        # 手动存储一条记忆
+/hindsight ask <问题>           # 综合记忆问答（recall + 心智模型）
+/hindsight reflect [名称]       # 查看 Mental Models（用户画像/待办等）
+/hindsight refresh [名称]       # 手动刷新 Mental Model
 /hindsight list [数量]          # 查看最近记忆
 /hindsight delete <ID>         # 删除指定记忆
 /hindsight stats               # 查看记忆统计
 /hindsight init                # 初始化/重置记忆库配置
 /hindsight import [数量]        # 导入 AstrBot 历史对话
+/hindsight reset_import        # 重置导入状态
 ```
 
 ### 示例
@@ -62,8 +70,20 @@ git clone https://github.com/aimercat1994/astrbot-plugin-hindsight.git
 # 检查服务是否正常
 /hindsight health
 
+# 手动存储一条记忆
+/hindsight retain 用户喜欢用 Python 写脚本
+
 # 搜索关于"Python"的记忆
 /hindsight recall Python
+
+# 综合问答：结合记忆和用户画像回答
+/hindsight ask 用户的技术偏好是什么
+
+# 查看用户画像
+/hindsight reflect 用户画像
+
+# 刷新所有 Mental Models
+/hindsight refresh
 
 # 导入最近 200 条历史对话
 /hindsight import 200
@@ -93,8 +113,10 @@ git clone https://github.com/aimercat1994/astrbot-plugin-hindsight.git
 ```
 
 - **自动回忆**：在 LLM 请求前，从 Hindsight 检索相关记忆注入上下文
-- **自动存储**：在 LLM 响应后，将用户消息存储到 Hindsight
-- **历史导入**：遍历 AstrBot 对话历史，批量导入到 Hindsight
+- **自动存储**：在 LLM 响应后，将用户消息 + 助手回复存储到 Hindsight
+- **手动管理**：支持手动存储、搜索、删除记忆
+- **心智模型**：查询和刷新 Mental Models（用户画像、待办事项等）
+- **历史导入**：遍历 AstrBot 对话历史，批量并发导入到 Hindsight
 
 ## 🔧 常见问题
 

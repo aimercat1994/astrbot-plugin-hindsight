@@ -1,10 +1,11 @@
 """Hindsight 长期记忆插件
 
-自动记忆存储、智能回忆、手动管理
+自动记忆存储、智能回忆、手动管理、Mental Model 查询
 """
 
 import json
 import time
+import asyncio
 from pathlib import Path
 
 from astrbot.api.event import filter, AstrMessageEvent, MessageEventResult
@@ -60,6 +61,9 @@ class HindsightPlugin(Star):
         # 导入状态文件
         self._import_state_file = Path(get_astrbot_data_path()) / "plugins" / "hindsight_import_state.json"
         self._import_state = self._load_import_state()
+
+        # 缓存用户消息（用于配对 bot 回复）
+        self._user_msg_cache: dict[str, str] = {}  # session_id -> user_message
 
     def _load_import_state(self) -> dict:
         """加载导入状态"""
@@ -205,48 +209,39 @@ class HindsightPlugin(Star):
             return True
         return False
 
-    @filter.on_llm_response()
-    async def on_response(self, event: AstrMessageEvent):
-        """在 LLM 响应后存储对话记忆"""
-        if not self.config.get("auto_retain", True):
-            return
-        if self._is_excluded(event):
-            return
-
-        try:
-            # 直接把对话内容传给 Hindsight，让它自己处理
-            content = f"用户: {event.message_str}"
-            await self.hindsight.retain(
-                content=content,
-                bank_id=self.bank_id,
-                tags=["conversation"],
-                metadata={
-                    "source": "astrbot",
-                    "user_id": event.get_sender_id(),
-                    "user_name": event.get_sender_name(),
-                    "platform": event.get_platform_name(),
-                },
-            )
-            logger.debug(f"已存储对话记忆: {content[:50]}...")
-
-        except Exception as e:
-            logger.error(f"记忆存储失败: {e}")
+    def _get_event_metadata(self, event: AstrMessageEvent) -> dict:
+        """从事件中提取标准元数据"""
+        return {
+            "source": "astrbot",
+            "user_id": event.get_sender_id() or "",
+            "user_name": event.get_sender_name() or "",
+            "platform": event.get_platform_name() or "",
+            "group_id": event.get_group_id() or "",
+        }
 
     # ==================== 事件钩子 ====================
 
     @filter.on_llm_request()
     async def on_request(self, event: AstrMessageEvent):
-        """在 LLM 请求前注入相关记忆"""
-        if not self.config.get("auto_recall", True):
-            return
+        """在 LLM 请求前：缓存用户消息 + 注入相关记忆"""
         if self._is_excluded(event):
             return
 
+        user_msg = event.message_str
+        session_id = event.session_id
+
+        # 缓存用户消息，用于后续配对 bot 回复
+        if user_msg:
+            self._user_msg_cache[session_id] = user_msg
+
+        # 自动回忆注入
+        if not self.config.get("auto_recall", True):
+            return
+
         try:
-            query = event.message_str
             max_results = self.config.get("max_recall_results", 5)
             memories = await self.hindsight.recall(
-                query=query,
+                query=user_msg,
                 bank_id=self.bank_id,
                 max_results=max_results,
                 min_relevance=self.config.get("min_relevance", 0.7),
@@ -256,7 +251,9 @@ class HindsightPlugin(Star):
                 # 格式化记忆为上下文
                 lines = []
                 for mem in memories[:max_results]:
-                    lines.append(f"- {mem.get('content', '')}")
+                    content = mem.get("content", "")
+                    relevance = mem.get("relevance", 0)
+                    lines.append(f"- {content} (相关度: {relevance:.0%})")
                 context = "\n".join(lines)
 
                 event.llm_request.context.append(
@@ -269,6 +266,45 @@ class HindsightPlugin(Star):
 
         except Exception as e:
             logger.error(f"记忆回忆失败: {e}")
+
+    @filter.on_llm_response()
+    async def on_response(self, event: AstrMessageEvent, result: MessageEventResult):
+        """在 LLM 响应后：存储用户消息 + bot 回复"""
+        if not self.config.get("auto_retain", True):
+            return
+        if self._is_excluded(event):
+            return
+
+        try:
+            session_id = event.session_id
+            user_msg = self._user_msg_cache.pop(session_id, event.message_str)
+
+            # 尝试获取 bot 回复
+            bot_reply = ""
+            try:
+                if result and hasattr(result, "get_plain_text"):
+                    bot_reply = result.get_plain_text()
+            except Exception:
+                pass
+
+            # 构建完整对话内容
+            if user_msg and bot_reply:
+                content = f"用户: {user_msg}\n助手: {bot_reply}"
+            elif user_msg:
+                content = f"用户: {user_msg}"
+            else:
+                return
+
+            await self.hindsight.retain(
+                content=content,
+                bank_id=self.bank_id,
+                tags=["conversation"],
+                metadata=self._get_event_metadata(event),
+            )
+            logger.debug(f"已存储对话记忆: {content[:80]}...")
+
+        except Exception as e:
+            logger.error(f"记忆存储失败: {e}")
 
     # ==================== 用户命令 ====================
 
@@ -310,6 +346,118 @@ class HindsightPlugin(Star):
         except Exception as e:
             logger.error(f"记忆搜索失败: {e}")
             yield event.plain_result(f"❌ 搜索失败: {e}")
+
+    @hindsight_group.command("retain", alias={"存储记忆", "记住"})
+    async def retain_memory(self, event: AstrMessageEvent, *, content: str):
+        """手动存储一条记忆
+
+        Args:
+            content(string): 要记住的内容
+        """
+        try:
+            await self.hindsight.retain(
+                content=content,
+                bank_id=self.bank_id,
+                tags=["manual"],
+                metadata=self._get_event_metadata(event),
+            )
+            preview = content[:50] + "..." if len(content) > 50 else content
+            yield event.plain_result(f"✅ 已记住：{preview}")
+
+        except Exception as e:
+            logger.error(f"手动存储失败: {e}")
+            yield event.plain_result(f"❌ 存储失败: {e}")
+
+    @hindsight_group.command("reflect", alias={"画像", "用户画像", "心智模型"})
+    async def reflect_memory(self, event: AstrMessageEvent, name: str = ""):
+        """查看 Mental Model（用户画像/待办事项等）
+
+        Args:
+            name(string): 模型名称，留空显示所有
+        """
+        try:
+            models = await self.hindsight.list_mental_models(bank_id=self.bank_id)
+
+            if not models:
+                yield event.plain_result("📭 暂无 Mental Model，请先运行 /hindsight init 初始化")
+                return
+
+            # 如果指定了名称，筛选匹配的模型
+            if name:
+                matched = [m for m in models if name.lower() in m.get("name", "").lower()]
+                if not matched:
+                    names = ", ".join(m.get("name", "?") for m in models)
+                    yield event.plain_result(f"❌ 未找到名为 '{name}' 的模型\n可用模型: {names}")
+                    return
+                models = matched
+
+            output = "🧠 Mental Models：\n"
+            for model in models:
+                model_name = model.get("name", "未命名")
+                content = model.get("content") or "(尚未生成，请等待记忆积累后自动刷新)"
+                source_query = model.get("source_query", "")
+
+                output += f"\n{'='*30}\n"
+                output += f"📌 {model_name}\n"
+                if source_query:
+                    output += f"   查询: {source_query}\n"
+                output += f"\n{content}\n"
+
+            yield event.plain_result(output.strip())
+
+        except Exception as e:
+            logger.error(f"查询 Mental Model 失败: {e}")
+            yield event.plain_result(f"❌ 查询失败: {e}")
+
+    @hindsight_group.command("ask", alias={"问记忆", "记忆问答"})
+    async def ask_memory(self, event: AstrMessageEvent, *, question: str):
+        """综合记忆问答（recall + mental model）
+
+        Args:
+            question(string): 你的问题
+        """
+        try:
+            # 并行获取 recall 结果和 mental models
+            recall_task = self.hindsight.recall(
+                query=question,
+                bank_id=self.bank_id,
+                max_results=5,
+                min_relevance=0.5,
+            )
+            models_task = self.hindsight.list_mental_models(bank_id=self.bank_id)
+
+            results, models = await asyncio.gather(recall_task, models_task)
+
+            output = f"❓ 问题: {question}\n"
+
+            # 相关记忆
+            if results:
+                output += f"\n📚 相关记忆 ({len(results)} 条)：\n"
+                for i, mem in enumerate(results, 1):
+                    content = mem.get("content", "")
+                    relevance = mem.get("relevance", 0)
+                    if len(content) > 150:
+                        content = content[:150] + "..."
+                    output += f"  {i}. {content} (相关度: {relevance:.0%})\n"
+            else:
+                output += "\n📚 未找到相关记忆\n"
+
+            # Mental Models 摘要
+            if models:
+                output += f"\n🧠 记忆画像：\n"
+                for model in models:
+                    model_name = model.get("name", "")
+                    content = model.get("content") or "(无)"
+                    # 只取前 300 字符作为摘要
+                    if len(content) > 300:
+                        content = content[:300] + "..."
+                    output += f"\n  【{model_name}】\n  {content}\n"
+
+            yield event.plain_result(output.strip())
+
+        except Exception as e:
+            logger.error(f"记忆问答失败: {e}")
+            yield event.plain_result(f"❌ 问答失败: {e}")
 
     @hindsight_group.command("list", alias={"记忆列表", "最近记忆"})
     async def list_memory(self, event: AstrMessageEvent, limit: int = 10):
@@ -369,16 +517,84 @@ class HindsightPlugin(Star):
         try:
             stats = await self.hindsight.get_stats(bank_id=self.bank_id)
 
-            output = "📊 记忆统计：\n\n"
-            output += f"• 总记忆数: {stats.get('total', 0)}\n"
-            output += f"• 今日新增: {stats.get('today', 0)}\n"
-            output += f"• 本周新增: {stats.get('this_week', 0)}\n"
+            total_nodes = stats.get("total_nodes", 0)
+            total_links = stats.get("total_links", 0)
+            total_docs = stats.get("total_documents", 0)
 
-            yield event.plain_result(output)
+            nodes_by_type = stats.get("nodes_by_fact_type", {})
+            links_by_type = stats.get("links_by_link_type", {})
+
+            output = "📊 记忆统计：\n\n"
+            output += f"📄 文档数: {total_docs}\n"
+            output += f"🧠 知识节点: {total_nodes}\n"
+            output += f"🔗 关系链接: {total_links}\n"
+
+            if nodes_by_type:
+                output += "\n节点类型分布:\n"
+                for ntype, count in nodes_by_type.items():
+                    output += f"  • {ntype}: {count}\n"
+
+            if links_by_type:
+                output += "\n链接类型分布:\n"
+                for ltype, count in links_by_type.items():
+                    output += f"  • {ltype}: {count}\n"
+
+            # Mental Models 状态
+            try:
+                models = await self.hindsight.list_mental_models(bank_id=self.bank_id)
+                if models:
+                    output += f"\n🧠 Mental Models ({len(models)}):\n"
+                    for m in models:
+                        name = m.get("name", "?")
+                        has_content = "✅" if m.get("content") else "⏳"
+                        output += f"  {has_content} {name}\n"
+            except Exception:
+                pass
+
+            yield event.plain_result(output.strip())
 
         except Exception as e:
             logger.error(f"获取统计失败: {e}")
             yield event.plain_result(f"❌ 获取失败: {e}")
+
+    @hindsight_group.command("refresh", alias={"刷新画像"})
+    async def refresh_model(self, event: AstrMessageEvent, name: str = ""):
+        """手动刷新 Mental Model
+
+        Args:
+            name(string): 模型名称，留空刷新所有
+        """
+        try:
+            models = await self.hindsight.list_mental_models(bank_id=self.bank_id)
+
+            if not models:
+                yield event.plain_result("📭 暂无 Mental Model")
+                return
+
+            if name:
+                models = [m for m in models if name.lower() in m.get("name", "").lower()]
+                if not models:
+                    yield event.plain_result(f"❌ 未找到名为 '{name}' 的模型")
+                    return
+
+            refreshed = []
+            for model in models:
+                model_id = model.get("id", "")
+                model_name = model.get("name", "?")
+                try:
+                    await self.hindsight.refresh_mental_model(model_id, bank_id=self.bank_id)
+                    refreshed.append(model_name)
+                except Exception as e:
+                    logger.warning(f"刷新 {model_name} 失败: {e}")
+
+            if refreshed:
+                yield event.plain_result(f"✅ 已触发刷新: {', '.join(refreshed)}\n⏳ 生成需要一些时间，请稍后查看")
+            else:
+                yield event.plain_result("❌ 刷新失败")
+
+        except Exception as e:
+            logger.error(f"刷新 Mental Model 失败: {e}")
+            yield event.plain_result(f"❌ 刷新失败: {e}")
 
     @hindsight_group.command("health", alias={"记忆状态"})
     async def health_check(self, event: AstrMessageEvent):
@@ -455,6 +671,28 @@ class HindsightPlugin(Star):
             skipped = 0
             errors = 0
 
+            # 并发控制
+            sem = asyncio.Semaphore(self.config.get("import_concurrency", 5))
+
+            async def _import_msg(content: str, conv, msg_idx: int):
+                nonlocal imported
+                async with sem:
+                    try:
+                        await self.hindsight.retain(
+                            content=content,
+                            bank_id=self.bank_id,
+                            tags=["history", "auto_import"],
+                            metadata={
+                                "source": "astrbot_history",
+                                "conversation_id": conv.cid or "",
+                                "platform_id": conv.platform_id or "",
+                                "user_id": conv.user_id or "",
+                            },
+                        )
+                        imported += 1
+                    except Exception as retain_err:
+                        logger.warning(f"导入消息失败 (conv={conv.cid}, msg={msg_idx}): {retain_err}")
+
             for conv in conversations[:limit]:
                 try:
                     # 跳过已导入的对话（除非强制模式）
@@ -464,13 +702,13 @@ class HindsightPlugin(Star):
 
                     history = json.loads(conv.history or "[]")
 
+                    tasks = []
                     for msg_idx, msg in enumerate(history):
                         role = msg.get("role", "")
                         content = msg.get("content", "")
 
                         # 处理 list 类型的 content（多模态消息）
                         if isinstance(content, list):
-                            # 提取文本部分
                             text_parts = []
                             for item in content:
                                 if isinstance(item, dict) and item.get("type") == "text":
@@ -482,37 +720,26 @@ class HindsightPlugin(Star):
                         if not content or not isinstance(content, str) or len(content) < 5:
                             continue
 
-                        # 只导入用户消息（避免重复存储机器人回复）
+                        # 导入用户消息
                         if role == "user":
-                            try:
-                                await self.hindsight.retain(
-                                    content=content,
-                                    bank_id=self.bank_id,
-                                    tags=["history", "auto_import"],
-                                    metadata={
-                                        "source": "astrbot_history",
-                                        "conversation_id": conv.cid,
-                                        "platform_id": conv.platform_id or "",
-                                        "user_id": conv.user_id or "",
-                                    },
-                                )
-                                imported += 1
-                            except Exception as retain_err:
-                                logger.warning(f"导入消息失败 (conv={conv.cid}, msg={msg_idx}): {retain_err}")
+                            tasks.append(_import_msg(content, conv, msg_idx))
+
+                    # 批量并发执行
+                    if tasks:
+                        await asyncio.gather(*tasks)
 
                     # 标记为已导入
                     imported_cids.add(conv.cid)
 
                 except Exception as e:
                     errors += 1
-                    # 打印详细错误信息
                     try:
                         if hasattr(e, 'response') and e.response is not None:
                             error_body = e.response.text
                             logger.warning(f"导入对话 {conv.cid} 失败 (422): {error_body[:500]}")
                         else:
                             logger.warning(f"导入对话 {conv.cid} 失败: {e}")
-                    except Exception as log_err:
+                    except Exception:
                         logger.warning(f"导入对话 {conv.cid} 失败: {e}")
 
             # 保存导入状态
@@ -537,4 +764,5 @@ class HindsightPlugin(Star):
 
     async def terminate(self):
         """插件卸载时清理"""
+        await self.hindsight.close()
         logger.info("Hindsight 插件已卸载")

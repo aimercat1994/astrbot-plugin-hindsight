@@ -21,7 +21,7 @@
     "description": "自动记忆存储",
     "type": "bool",
     "default": true,
-    "hint": "自动存储对话中的用户消息"
+    "hint": "自动存储对话中的用户消息和助手回复"
   },
   "auto_recall": {
     "description": "自动记忆回忆",
@@ -52,6 +52,12 @@
     "type": "int",
     "default": 100,
     "hint": "自动导入时的最大对话数量"
+  },
+  "import_concurrency": {
+    "description": "导入并发数",
+    "type": "int",
+    "default": 5,
+    "hint": "批量导入时的最大并发请求数"
   },
   "exclude_groups": {
     "description": "排除的群组",
