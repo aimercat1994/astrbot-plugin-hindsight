@@ -3,10 +3,11 @@
     "description": "Hindsight API 地址",
     "type": "string",
     "default": "http://192.168.1.10:8888",
-    "hint": "Hindsight 服务的 HTTP 地址"
+    "hint": "Hindsight 服务的 HTTP 地址，如 http://192.168.1.10:8888",
+    "obvious_hint": true
   },
   "hindsight_api_key": {
-    "description": "API Key（如果启用了认证）",
+    "description": "API Key",
     "type": "string",
     "default": "",
     "hint": "留空表示不需要认证"
@@ -15,60 +16,74 @@
     "description": "记忆库 ID",
     "type": "string",
     "default": "astrbot",
-    "hint": "用于隔离不同机器人的记忆"
+    "hint": "用于隔离不同机器人的记忆",
+    "obvious_hint": true
   },
   "auto_retain": {
     "description": "自动记忆存储",
     "type": "bool",
     "default": true,
-    "hint": "自动存储对话中的用户消息和助手回复"
+    "hint": "对话时自动存储用户消息和助手回复到 Hindsight",
+    "obvious_hint": true
+  },
+  "retain_bot_replies": {
+    "description": "存储助手回复",
+    "type": "bool",
+    "default": true,
+    "hint": "开启：存储完整对话（用户+助手）；关闭：仅存储用户消息"
   },
   "auto_recall": {
     "description": "自动记忆回忆",
     "type": "bool",
     "default": true,
-    "hint": "在对话时自动注入相关历史记忆"
+    "hint": "对话时自动检索相关历史记忆注入 LLM 上下文",
+    "obvious_hint": true
   },
   "max_recall_results": {
-    "description": "最大回忆数量",
+    "description": "最大回忆条数",
     "type": "int",
     "default": 5,
-    "hint": "每次对话注入的最大记忆条数"
+    "hint": "每次注入的最大记忆条数（1-20）"
   },
   "min_relevance": {
     "description": "最小相关度阈值",
     "type": "float",
     "default": 0.7,
-    "hint": "低于此阈值的记忆不会被注入 (0-1)"
+    "slider": {
+      "min": 0.0,
+      "max": 1.0,
+      "step": 0.05
+    },
+    "hint": "低于此阈值的记忆不会注入，越高越严格"
   },
   "import_history_on_load": {
-    "description": "启动时自动导入历史",
+    "description": "启动时自动导入历史对话",
     "type": "bool",
     "default": false,
-    "hint": "插件加载时自动导入 AstrBot 历史对话"
+    "hint": "插件冷启动时自动导入未导入的 AstrBot 历史对话"
   },
   "import_history_limit": {
-    "description": "历史导入数量",
+    "description": "历史导入数量上限",
     "type": "int",
     "default": 100,
-    "hint": "自动导入时的最大对话数量"
+    "hint": "自动/手动导入时的最大对话数量"
   },
   "import_concurrency": {
     "description": "导入并发数",
     "type": "int",
     "default": 5,
-    "hint": "批量导入时的最大并发请求数"
+    "hint": "批量导入时的最大并发请求数，过高可能触发限流"
   },
   "exclude_groups": {
-    "description": "排除的群组",
+    "description": "排除的群组 ID",
     "type": "list",
     "default": [],
-    "hint": "不进行记忆存储的群组 ID"
+    "hint": "这些群组的对话不会被记忆"
   },
   "exclude_users": {
-    "description": "排除的用户",
+    "description": "排除的用户 ID",
     "type": "list",
     "default": [],
-    "hint": "不进行记忆存储的用户 ID"
+    "hint": "这些用户的对话不会被记忆"
   }
 }

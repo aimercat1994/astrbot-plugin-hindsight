@@ -279,13 +279,14 @@ class HindsightPlugin(Star):
             session_id = event.session_id
             user_msg = self._user_msg_cache.pop(session_id, event.message_str)
 
-            # 尝试获取 bot 回复
+            # 尝试获取 bot 回复（取决于配置）
             bot_reply = ""
-            try:
-                if result and hasattr(result, "get_plain_text"):
-                    bot_reply = result.get_plain_text()
-            except Exception:
-                pass
+            if self.config.get("retain_bot_replies", True):
+                try:
+                    if result and hasattr(result, "get_plain_text"):
+                        bot_reply = result.get_plain_text()
+                except Exception:
+                    pass
 
             # 构建完整对话内容
             if user_msg and bot_reply:
