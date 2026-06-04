@@ -271,59 +271,6 @@ class HindsightPlugin(Star):
 
     # ==================== 群聊辅助方法 ====================
 
-    def _parse_time_param(self, time_str: str) -> int:
-        """解析时间参数，返回 unix timestamp
-
-        支持格式：
-        - YYYY-MM-DD (如 2024-01-15)
-        - YYYY-MM-DD HH:MM:SS (如 2024-01-15 10:30:00)
-        - unix timestamp (如 1705276800)
-        - 相对时间 (如 7d, 24h, 30m)
-        """
-        import re
-        from datetime import datetime, timedelta
-
-        if not time_str:
-            return 0
-
-        time_str = time_str.strip()
-
-        # 尝试解析为 unix timestamp
-        if time_str.isdigit():
-            return int(time_str)
-
-        # 尝试解析相对时间 (7d, 24h, 30m)
-        rel_match = re.match(r'^(\d+)([dhm])$', time_str.lower())
-        if rel_match:
-            value = int(rel_match.group(1))
-            unit = rel_match.group(2)
-            now = int(time.time())
-            if unit == 'd':
-                return now - (value * 86400)
-            elif unit == 'h':
-                return now - (value * 3600)
-            elif unit == 'm':
-                return now - (value * 60)
-
-        # 尝试解析日期格式
-        formats = [
-            "%Y-%m-%d %H:%M:%S",
-            "%Y-%m-%d %H:%M",
-            "%Y-%m-%d",
-            "%Y/%m/%d %H:%M:%S",
-            "%Y/%m/%d %H:%M",
-            "%Y/%m/%d",
-        ]
-        for fmt in formats:
-            try:
-                dt = datetime.strptime(time_str, fmt)
-                return int(dt.timestamp())
-            except ValueError:
-                continue
-
-        logger.warning(f"无法解析时间参数: {time_str}")
-        return 0
-
     def _is_excluded(self, event: AstrMessageEvent) -> bool:
         """检查是否在排除列表"""
         user_id = event.get_sender_id()
@@ -1037,32 +984,15 @@ class HindsightPlugin(Star):
             yield event.plain_result(f"❌ 重置失败: {e}")
 
     @hindsight_group.command("import", alias={"导入历史"})
-    async def import_history(
-        self,
-        event: AstrMessageEvent,
-        limit: int = 100,
-        force: bool = False,
-        start_time: str = "",
-        end_time: str = "",
-        user_id: str = "",
-        group_id: str = "",
-    ):
+    async def import_history(self, event: AstrMessageEvent, limit: int = 100, force: bool = False):
         """导入 AstrBot 历史对话到 Hindsight
 
         Args:
             limit(number): 导入的对话数量，默认 100
             force(bool): 强制重新导入所有对话（忽略已导入记录），默认 false
-            start_time(string): 开始时间（格式：YYYY-MM-DD 或 unix timestamp），留空不限制
-            end_time(string): 结束时间（格式：YYYY-MM-DD 或 unix timestamp），留空不限制
-            user_id(string): 只导入指定用户的对话（QQ号或用户ID），留空导入所有
-            group_id(string): 只导入指定群组的对话（群号），留空导入所有
         """
         try:
             yield event.plain_result("📥 开始导入历史对话...")
-
-            # 解析时间范围
-            start_ts = self._parse_time_param(start_time) if start_time else 0
-            end_ts = self._parse_time_param(end_time) if end_time else 0
 
             # 获取对话管理器
             conv_mgr = self.context.conversation_manager
@@ -1075,35 +1005,6 @@ class HindsightPlugin(Star):
             if not conversations:
                 yield event.plain_result("📭 没有找到历史对话")
                 return
-
-            # 应用过滤条件
-            filtered_convs = []
-            for conv in conversations:
-                # 时间范围过滤
-                if start_ts and conv.created_at and conv.created_at < start_ts:
-                    continue
-                if end_ts and conv.created_at and conv.created_at > end_ts:
-                    continue
-
-                # 用户过滤
-                if user_id and user_id not in (conv.user_id or ""):
-                    continue
-
-                # 群组过滤
-                if group_id:
-                    # user_id 格式: napcat:GroupMessage:976177610
-                    conv_group_id = conv.user_id.split(":")[-1] if conv.user_id else ""
-                    if group_id != conv_group_id:
-                        continue
-
-                filtered_convs.append(conv)
-
-            if not filtered_convs:
-                yield event.plain_result("📭 没有找到符合条件的历史对话")
-                return
-
-            # 限制数量
-            filtered_convs = filtered_convs[:limit]
 
             # 已导入的对话 ID 集合
             imported_cids = set(self._import_state.get("imported_cids", [])) if not force else set()
@@ -1134,7 +1035,7 @@ class HindsightPlugin(Star):
                     except Exception as retain_err:
                         logger.warning(f"导入消息失败 (conv={conv.cid}, msg={msg_idx}): {retain_err}")
 
-            for conv in filtered_convs:
+            for conv in conversations[:limit]:
                 try:
                     # 跳过已导入的对话（除非强制模式）
                     if conv.cid in imported_cids:
@@ -1197,203 +1098,11 @@ class HindsightPlugin(Star):
                 result += f"，{errors} 个对话导入失败"
             if force:
                 result += "（强制模式）"
-            if start_time or end_time or user_id or group_id:
-                result += f"\n📋 过滤条件: "
-                if start_time:
-                    result += f"开始={start_time} "
-                if end_time:
-                    result += f"结束={end_time} "
-                if user_id:
-                    result += f"用户={user_id} "
-                if group_id:
-                    result += f"群组={group_id}"
-            yield event.plain_result(result.strip())
+            yield event.plain_result(result)
 
         except Exception as e:
             logger.error(f"导入历史对话失败: {e}")
             yield event.plain_result(f"❌ 导入失败: {e}")
-
-    @hindsight_group.command("export", alias={"导出记忆"})
-    async def export_memory(self, event: AstrMessageEvent, limit: int = 100, format: str = "json"):
-        """导出记忆到文件
-
-        Args:
-            limit(number): 导出的记忆数量，默认 100
-            format(string): 导出格式，支持 json/csv/txt，默认 json
-        """
-        try:
-            yield event.plain_result("📤 开始导出记忆...")
-
-            # 获取记忆列表
-            memories = await self.hindsight.list_recent(
-                bank_id=self.bank_id, limit=min(limit, 1000)
-            )
-
-            if not memories:
-                yield event.plain_result("📭 没有记忆可导出")
-                return
-
-            # 准备导出数据
-            export_data = []
-            for mem in memories:
-                text = mem.get("text", mem.get("content", ""))
-                mem_id = mem.get("id", "")
-                mem_type = mem.get("type", "")
-                tags = mem.get("tags", [])
-                date = mem.get("date", mem.get("created_at", ""))
-
-                export_data.append({
-                    "id": mem_id,
-                    "text": text,
-                    "type": mem_type,
-                    "tags": tags,
-                    "date": date,
-                })
-
-            # 生成文件名
-            timestamp = int(time.time())
-            data_dir = Path(get_astrbot_data_path()) / "plugin_data" / "astrbot_plugin_hindsight"
-            data_dir.mkdir(parents=True, exist_ok=True)
-
-            if format == "json":
-                file_path = data_dir / f"memories_export_{timestamp}.json"
-                with open(file_path, "w", encoding="utf-8") as f:
-                    json.dump(export_data, f, ensure_ascii=False, indent=2)
-            elif format == "csv":
-                import csv
-                file_path = data_dir / f"memories_export_{timestamp}.csv"
-                with open(file_path, "w", encoding="utf-8", newline="") as f:
-                    writer = csv.DictWriter(f, fieldnames=["id", "text", "type", "tags", "date"])
-                    writer.writeheader()
-                    for row in export_data:
-                        row["tags"] = ", ".join(row["tags"])
-                        writer.writerow(row)
-            elif format == "txt":
-                file_path = data_dir / f"memories_export_{timestamp}.txt"
-                with open(file_path, "w", encoding="utf-8") as f:
-                    for i, row in enumerate(export_data, 1):
-                        f.write(f"--- 记忆 {i} ---\n")
-                        f.write(f"ID: {row['id']}\n")
-                        f.write(f"内容: {row['text']}\n")
-                        f.write(f"类型: {row['type']}\n")
-                        f.write(f"标签: {', '.join(row['tags'])}\n")
-                        f.write(f"时间: {row['date']}\n\n")
-            else:
-                yield event.plain_result(f"❌ 不支持的格式: {format}，支持 json/csv/txt")
-                return
-
-            yield event.plain_result(
-                f"✅ 导出完成！共 {len(export_data)} 条记忆\n"
-                f"📁 文件: {file_path}\n"
-                f"📊 格式: {format}"
-            )
-
-        except Exception as e:
-            logger.error(f"导出记忆失败: {e}")
-            yield event.plain_result(f"❌ 导出失败: {e}")
-
-    @hindsight_group.command("delete_batch", alias={"批量删除"})
-    async def delete_batch(self, event: AstrMessageEvent, tag: str = "", limit: int = 10):
-        """批量删除记忆
-
-        Args:
-            tag(string): 按标签删除，留空则删除最近的记忆
-            limit(number): 删除数量，默认 10
-        """
-        try:
-            yield event.plain_result(f"🗑️ 开始批量删除...")
-
-            # 获取要删除的记忆
-            if tag:
-                # 使用 recall 按标签搜索（通过 Hindsight API 的 tags 参数）
-                results = await self.hindsight.recall(
-                    query="",  # 空查询
-                    bank_id=self.bank_id,
-                    max_results=limit,
-                    tags=[tag],
-                    tags_match="any",
-                )
-            else:
-                # 获取最近的记忆
-                results = await self.hindsight.list_recent(
-                    bank_id=self.bank_id, limit=limit
-                )
-
-            if not results:
-                yield event.plain_result("📭 没有找到要删除的记忆")
-                return
-
-            # 确认删除
-            deleted = 0
-            errors = 0
-            for mem in results:
-                mem_id = mem.get("id", "")
-                if not mem_id:
-                    continue
-                try:
-                    await self.hindsight.delete(memory_id=mem_id, bank_id=self.bank_id)
-                    deleted += 1
-                except Exception as e:
-                    logger.warning(f"删除记忆 {mem_id} 失败: {e}")
-                    errors += 1
-
-            result = f"✅ 批量删除完成！删除 {deleted} 条记忆"
-            if tag:
-                result += f"\n🏷️ 标签: {tag}"
-            if errors > 0:
-                result += f"\n⚠️ {errors} 条删除失败"
-            yield event.plain_result(result)
-
-        except Exception as e:
-            logger.error(f"批量删除失败: {e}")
-            yield event.plain_result(f"❌ 删除失败: {e}")
-
-    @hindsight_group.command("search", alias={"搜索标签", "按标签搜索"})
-    async def search_by_tag(self, event: AstrMessageEvent, tag: str, limit: int = 10):
-        """按标签搜索记忆
-
-        Args:
-            tag(string): 标签名称
-            limit(number): 显示数量，默认 10
-        """
-        try:
-            # 使用 recall 按标签搜索
-            results = await self.hindsight.recall(
-                query="",  # 空查询
-                bank_id=self.bank_id,
-                max_results=limit,
-                tags=[tag],
-                tags_match="any",
-            )
-
-            if not results:
-                yield event.plain_result(f"📭 没有找到标签为 '{tag}' 的记忆")
-                return
-
-            output = f"🏷️ 标签 '{tag}' 的记忆 ({len(results)} 条):\n\n"
-            for i, mem in enumerate(results, 1):
-                text = mem.get("text", mem.get("content", ""))
-                mem_id = mem.get("id", "")
-                mem_type = mem.get("type", "")
-                date = mem.get("date", mem.get("created_at", ""))
-
-                if len(text) > 100:
-                    text = text[:100] + "..."
-
-                output += f"{i}. {text}\n"
-                if mem_id:
-                    output += f"   ID: {mem_id}\n"
-                if mem_type:
-                    output += f"   类型: {mem_type}\n"
-                if date:
-                    output += f"   时间: {date}\n"
-                output += "\n"
-
-            yield event.plain_result(output.strip())
-
-        except Exception as e:
-            logger.error(f"按标签搜索失败: {e}")
-            yield event.plain_result(f"❌ 搜索失败: {e}")
 
     # ==================== 生命周期 ====================
 

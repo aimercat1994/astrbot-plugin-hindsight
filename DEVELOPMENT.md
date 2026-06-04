@@ -788,6 +788,25 @@ curl -X POST http://192.168.1.10:8888/v1/default/banks/astrbot/mental-models/{id
 
 ## 9. 版本历史
 
+### v1.4.0 (2026-06-04)
+**功能增强 - 按时间/用户/群组导入 + 导出 + 批量删除 + 标签搜索**
+
+新增：
+- `import` 命令支持时间范围过滤（start_time/end_time）
+- `import` 命令支持用户过滤（user_id）
+- `import` 命令支持群组过滤（group_id）
+- `_parse_time_param()` - 时间参数解析（支持 YYYY-MM-DD、相对时间、unix timestamp）
+- `/hindsight export` - 导出记忆到文件（json/csv/txt 格式）
+- `/hindsight delete_batch` - 批量删除记忆（支持按标签删除）
+- `/hindsight search` - 按标签搜索记忆
+- HindsightClient.recall() 支持 tags 和 tags_match 参数
+
+改进：
+- import 命令现在显示过滤条件摘要
+- export 支持多种格式（json/csv/txt）
+- delete_batch 支持按标签或按时间删除
+- search 命令使用 recall API 的 tags 参数进行标签搜索
+
 ### v1.3.0 (2026-06-04)
 **群聊优化**
 

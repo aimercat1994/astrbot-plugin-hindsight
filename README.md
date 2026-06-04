@@ -109,7 +109,10 @@ git clone https://github.com/aimercat1994/astrbot-plugin-hindsight.git
 /hindsight delete <ID>         # 删除指定记忆
 /hindsight stats               # 查看记忆统计（含群聊性能指标）
 /hindsight init                # 初始化/重置记忆库配置
-/hindsight import [数量] [force] # 导入 AstrBot 历史对话
+/hindsight import [数量] [force] [start_time] [end_time] [user_id] [group_id]  # 导入历史对话
+/hindsight export [数量] [格式]  # 导出记忆到文件（json/csv/txt）
+/hindsight delete_batch [标签] [数量]  # 批量删除记忆
+/hindsight search <标签> [数量]  # 按标签搜索记忆
 /hindsight reset_import        # 重置导入状态
 ```
 
@@ -139,6 +142,36 @@ git clone https://github.com/aimercat1994/astrbot-plugin-hindsight.git
 
 # 强制重新导入（忽略已导入记录）
 /hindsight import 100 true
+
+# 按时间范围导入（最近7天）
+/hindsight import 100 false 7d
+
+# 按时间范围导入（指定日期范围）
+/hindsight import 100 false 2024-01-01 2024-01-31
+
+# 只导入特定用户的对话
+/hindsight import 100 false "" "" 123456789
+
+# 只导入特定群组的对话
+/hindsight import 100 false "" "" "" 976177610
+
+# 导出记忆到 JSON 文件
+/hindsight export 100 json
+
+# 导出记忆到 CSV 文件
+/hindsight export 50 csv
+
+# 导出记忆到 TXT 文件
+/hindsight export 200 txt
+
+# 批量删除最近 10 条记忆
+/hindsight delete_batch "" 10
+
+# 按标签批量删除
+/hindsight delete_batch conversation 20
+
+# 按标签搜索记忆
+/hindsight search conversation 10
 
 # 查看记忆统计（含群聊性能指标）
 /hindsight stats

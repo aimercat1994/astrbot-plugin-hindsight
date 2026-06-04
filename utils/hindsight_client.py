@@ -138,16 +138,32 @@ class HindsightClient:
         bank_id: str = "astrbot",
         max_results: int = 5,
         min_relevance: float = 0.0,
+        tags: Optional[List[str]] = None,
+        tags_match: str = "any",
     ) -> List[Dict[str, Any]]:
-        """检索相关记忆"""
+        """检索相关记忆
+
+        Args:
+            query: 搜索查询
+            bank_id: 记忆库ID
+            max_results: 最大结果数
+            min_relevance: 最小相关度阈值
+            tags: 按标签过滤
+            tags_match: 标签匹配模式 (any/all/any_strict/all_strict)
+        """
         client = self._get_client()
+        payload = {
+            "query": query,
+            "max_results": max_results,
+            "min_relevance": min_relevance,
+        }
+        if tags:
+            payload["tags"] = tags
+            payload["tags_match"] = tags_match
+
         response = await client.post(
             f"{self.base_url}/v1/default/banks/{bank_id}/memories/recall",
-            json={
-                "query": query,
-                "max_results": max_results,
-                "min_relevance": min_relevance,
-            },
+            json=payload,
         )
         response.raise_for_status()
         data = response.json()
