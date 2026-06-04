@@ -394,12 +394,21 @@ class HindsightPlugin(Star):
         }
 
     def _format_group_content(self, event: AstrMessageEvent, content: str) -> str:
-        """格式化群聊消息内容（添加发言人信息）"""
+        """格式化群聊消息内容（添加发言人信息：昵称 + QQ号）"""
         user_name = event.get_sender_name() or ""
+        user_id = event.get_sender_id() or ""
         group_id = event.get_group_id()
 
-        if group_id and user_name:
+        if not group_id:
+            return content
+
+        # 格式: [昵称(123456)] 消息内容
+        if user_name and user_id:
+            return f"[{user_name}({user_id})] {content}"
+        elif user_name:
             return f"[{user_name}] {content}"
+        elif user_id:
+            return f"[{user_id}] {content}"
         return content
 
     async def _get_mental_models_context(self) -> str:
