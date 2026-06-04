@@ -540,12 +540,20 @@ def _is_group_noise(self, content):
     return False
 ```
 
-#### 5. 群聊发言人标注
+#### 5. 群聊发言人标注（昵称 + QQ号）
 ```python
 def _format_group_content(self, event, content):
-    user_name = event.get_sender_name()
-    if event.get_group_id() and user_name:
+    user_name = event.get_sender_name()  # 昵称（可更改）
+    user_id = event.get_sender_id()      # QQ号（不变）
+    if not event.get_group_id():
+        return content
+    # 格式: [昵称(123456)] 消息内容
+    if user_name and user_id:
+        return f"[{user_name}({user_id})] {content}"
+    elif user_name:
         return f"[{user_name}] {content}"
+    elif user_id:
+        return f"[{user_id}] {content}"
     return content
 ```
 
