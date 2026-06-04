@@ -113,8 +113,18 @@ class HindsightPlugin(Star):
             except Exception:
                 pass  # bank 可能已存在
 
-            # 创建 mental models
+            # 创建 mental models（先检查是否已存在）
+            existing_models = []
+            try:
+                existing_models = await self.hindsight.list_mental_models(bank_id=self.bank_id)
+            except Exception:
+                pass
+
+            existing_names = {m.get("name") for m in existing_models}
+
             for model in BANK_CONFIG.get("mental_models", []):
+                if model["name"] in existing_names:
+                    continue  # 已存在，跳过
                 try:
                     await self.hindsight.create_mental_model(
                         self.bank_id,
@@ -124,7 +134,7 @@ class HindsightPlugin(Star):
                     )
                     logger.info(f"已创建 mental model: {model['name']}")
                 except Exception:
-                    pass  # 可能已存在
+                    pass
 
             logger.info(f"Bank '{self.bank_id}' 初始化完成")
 
