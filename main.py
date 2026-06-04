@@ -508,9 +508,9 @@ class HindsightPlugin(Star):
             if memories:
                 lines = []
                 for mem in memories[:max_results]:
-                    content = mem.get("content", "")
-                    relevance = mem.get("relevance", 0)
-                    lines.append(f"- {content} (相关度: {relevance:.0%})")
+                    text = mem.get("text", mem.get("content", ""))
+                    if text:
+                        lines.append(f"- {text}")
                 parts.append("历史记忆：\n" + "\n".join(lines))
 
             # 注入 Mental Model 上下文（带缓存）
@@ -625,14 +625,12 @@ class HindsightPlugin(Star):
 
             output = "🧠 相关记忆：\n\n"
             for i, mem in enumerate(results, 1):
-                content = mem.get("content", "")
-                relevance = mem.get("relevance", 0)
+                text = mem.get("text", mem.get("content", ""))
                 tags = mem.get("tags", [])
 
-                output += f"{i}. {content}\n"
-                output += f"   相关度: {relevance:.0%}"
+                output += f"{i}. {text}\n"
                 if tags:
-                    output += f" | 标签: {', '.join(tags)}"
+                    output += f"   标签: {', '.join(tags)}"
                 output += "\n\n"
 
             yield event.plain_result(output.strip())
@@ -728,11 +726,10 @@ class HindsightPlugin(Star):
             if results:
                 output += f"\n📚 相关记忆 ({len(results)} 条)：\n"
                 for i, mem in enumerate(results, 1):
-                    content = mem.get("content", "")
-                    relevance = mem.get("relevance", 0)
-                    if len(content) > 150:
-                        content = content[:150] + "..."
-                    output += f"  {i}. {content} (相关度: {relevance:.0%})\n"
+                    text = mem.get("text", mem.get("content", ""))
+                    if len(text) > 150:
+                        text = text[:150] + "..."
+                    output += f"  {i}. {text}\n"
             else:
                 output += "\n📚 未找到相关记忆\n"
 
@@ -771,16 +768,16 @@ class HindsightPlugin(Star):
 
             output = f"📋 最近 {len(results)} 条记忆：\n\n"
             for i, mem in enumerate(results, 1):
-                content = mem.get("content", "")
-                created_at = mem.get("created_at", "")
+                text = mem.get("text", mem.get("content", ""))
+                date = mem.get("date", mem.get("created_at", ""))
                 tags = mem.get("tags", [])
 
-                if len(content) > 100:
-                    content = content[:100] + "..."
+                if len(text) > 100:
+                    text = text[:100] + "..."
 
-                output += f"{i}. {content}\n"
-                if created_at:
-                    output += f"   时间: {created_at}"
+                output += f"{i}. {text}\n"
+                if date:
+                    output += f"   时间: {date}"
                 if tags:
                     output += f" | 标签: {', '.join(tags)}"
                 output += "\n\n"
