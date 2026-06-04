@@ -235,8 +235,10 @@ class HindsightPlugin(Star):
                         if not content or len(content) < 5:
                             continue
                         if role == "user":
+                            # 提取发言人信息，转为 [昵称(QQ号)] 格式
+                            formatted = self._parse_history_speaker(content, conv.platform_id or "")
                             await self.hindsight.retain(
-                                content=content,
+                                content=formatted,
                                 bank_id=self.bank_id,
                                 tags=["history", "auto_import"],
                                 metadata={
@@ -409,6 +411,35 @@ class HindsightPlugin(Star):
             return f"[{user_name}] {content}"
         elif user_id:
             return f"[{user_id}] {content}"
+        return content
+
+    def _parse_history_speaker(self, content: str, platform_id: str) -> str:
+        """从 AstrBot 历史消息中提取发言人信息，转为 [昵称(QQ号)] 格式
+
+        AstrBot 群聊格式: [timestamp] 昵称(ID:xxxxx): 消息内容
+        AstrBot 私聊格式: 消息内容 <system_reminder>User ID: xxxxx, Nickname: xxxxx</system_reminder>
+        """
+        import re
+
+        # 群聊格式: [timestamp] 昵称(ID:xxxxx): 消息内容
+        m = re.match(r'^\[.+?\]\s*(.+?)\(ID:(\d+)\):\s*(.+)$', content, re.DOTALL)
+        if m:
+            nickname, qq, msg = m.group(1).strip(), m.group(2), m.group(3).strip()
+            return f"[{nickname}({qq})] {msg}"
+
+        # 群聊格式变体: [BOT]昵称(ID:xxxxx): 消息内容
+        m = re.match(r'^\[BOT\](.+?)\(ID:(\d+)\):\s*(.+)$', content)
+        if m:
+            nickname, qq, msg = m.group(1).strip(), m.group(2), m.group(3).strip()
+            return f"[{nickname}({qq})] {msg}"
+
+        # 私聊格式: 消息内容 <system_reminder>User ID: xxxxx, Nickname: xxxxx</system_reminder>
+        m = re.search(r'<system_reminder>User ID:\s*(\d+),\s*Nickname:\s*(.+?)</system_reminder>', content)
+        if m:
+            qq, nickname = m.group(1), m.group(2).strip()
+            msg = re.sub(r'\s*<system_reminder>.+</system_reminder>', '', content, flags=re.DOTALL).strip()
+            return f"[{nickname}({qq})] {msg}"
+
         return content
 
     async def _get_mental_models_context(self) -> str:
@@ -1033,7 +1064,9 @@ class HindsightPlugin(Star):
 
                         # 导入用户消息
                         if role == "user":
-                            tasks.append(_import_msg(content, conv, msg_idx))
+                            # 提取发言人信息，转为 [昵称(QQ号)] 格式
+                            formatted = self._parse_history_speaker(content, conv.platform_id or "")
+                            tasks.append(_import_msg(formatted, conv, msg_idx))
 
                     # 批量并发执行
                     if tasks:
