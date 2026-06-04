@@ -74,6 +74,24 @@
     "default": 5,
     "hint": "批量导入时的最大并发请求数，过高可能触发限流"
   },
+  "inject_mental_models": {
+    "description": "注入用户画像到上下文",
+    "type": "bool",
+    "default": true,
+    "hint": "自动回忆时同时注入 Mental Model 摘要（用户画像等），关闭可减少上下文长度"
+  },
+  "cache_ttl": {
+    "description": "Mental Model 缓存时间（秒）",
+    "type": "int",
+    "default": 300,
+    "hint": "Mental Model 内容缓存时长，越长越省 API 调用，越短越实时"
+  },
+  "recall_cache_ttl": {
+    "description": "Recall 结果缓存时间（秒）",
+    "type": "int",
+    "default": 60,
+    "hint": "相同查询的 recall 结果缓存时长，避免短时间内重复查询"
+  },
   "exclude_groups": {
     "description": "排除的群组 ID",
     "type": "list",

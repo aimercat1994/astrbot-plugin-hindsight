@@ -14,6 +14,7 @@ from astrbot.api import AstrBotConfig, logger
 from astrbot.core.utils.astrbot_path import get_astrbot_data_path
 
 from .utils.hindsight_client import HindsightClient
+from .utils.ttl_cache import TTLCache
 
 # AstrBot 场景的 bank 配置模板
 BANK_CONFIG = {
@@ -64,6 +65,16 @@ class HindsightPlugin(Star):
 
         # 缓存用户消息（用于配对 bot 回复）
         self._user_msg_cache: dict[str, str] = {}  # session_id -> user_message
+
+        # 性能缓存
+        self._mm_cache = TTLCache(ttl=config.get("cache_ttl", 300))  # Mental Model 缓存
+        self._recall_cache = TTLCache(ttl=config.get("recall_cache_ttl", 60))  # Recall 结缓存
+
+        # 统计
+        self._stats = {"recall_hits": 0, "recall_misses": 0, "mm_hits": 0, "mm_misses": 0}
+
+        # 后台清理任务
+        self._cleanup_task: asyncio.Task | None = None
 
     def _load_import_state(self) -> dict:
         """加载导入状态"""
@@ -125,9 +136,34 @@ class HindsightPlugin(Star):
         """AstrBot 加载完成后初始化 bank"""
         await self._init_bank()
 
+        # 启动后台清理任务
+        self._cleanup_task = asyncio.create_task(self._periodic_cleanup())
+
         # 如果启用了自动导入历史，执行导入
         if self.config.get("import_history_on_load", False):
             await self._auto_import_history()
+
+    async def _periodic_cleanup(self):
+        """每 5 分钟清理过期缓存和孤立的用户消息缓存"""
+        while True:
+            try:
+                await asyncio.sleep(300)
+                self._mm_cache.cleanup()
+                self._recall_cache.cleanup()
+
+                # 清理超过 10 分钟的用户消息缓存（防止泄漏）
+                # 用 session_id 无法判断时间，直接限制大小
+                if len(self._user_msg_cache) > 1000:
+                    # 保留最后 500 条
+                    keys = list(self._user_msg_cache.keys())
+                    for k in keys[:-500]:
+                        del self._user_msg_cache[k]
+                    logger.debug(f"清理用户消息缓存，保留 {len(self._user_msg_cache)} 条")
+
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.warning(f"后台清理异常: {e}")
 
     async def _auto_import_history(self):
         """自动导入历史对话（只导入新对话）"""
@@ -219,6 +255,38 @@ class HindsightPlugin(Star):
             "group_id": event.get_group_id() or "",
         }
 
+    async def _get_mental_models_context(self) -> str:
+        """获取 Mental Model 上下文（带缓存）"""
+        cache_key = f"mm_context_{self.bank_id}"
+        cached = self._mm_cache.get(cache_key)
+        if cached is not None:
+            self._stats["mm_hits"] += 1
+            return cached
+
+        self._stats["mm_misses"] += 1
+
+        try:
+            models = await self.hindsight.list_mental_models(bank_id=self.bank_id)
+            if not models:
+                return ""
+
+            lines = []
+            for model in models:
+                name = model.get("name", "")
+                content = model.get("content") or ""
+                if content and len(content) > 300:
+                    content = content[:300] + "..."
+                if content:
+                    lines.append(f"【{name}】{content}")
+
+            context = "\n".join(lines)
+            self._mm_cache.set(cache_key, context)
+            return context
+
+        except Exception as e:
+            logger.debug(f"获取 Mental Model 上下文失败: {e}")
+            return ""
+
     # ==================== 事件钩子 ====================
 
     @filter.on_llm_request()
@@ -238,38 +306,62 @@ class HindsightPlugin(Star):
         if not self.config.get("auto_recall", True):
             return
 
+        if not hasattr(event, "llm_request") or not event.llm_request:
+            return
+
         try:
             max_results = self.config.get("max_recall_results", 5)
-            memories = await self.hindsight.recall(
-                query=user_msg,
-                bank_id=self.bank_id,
-                max_results=max_results,
-                min_relevance=self.config.get("min_relevance", 0.7),
-            )
+            min_relevance = self.config.get("min_relevance", 0.7)
 
-            if memories and hasattr(event, "llm_request") and event.llm_request:
-                # 格式化记忆为上下文
+            # 检查 recall 缓存
+            cache_key = f"recall_{hash(user_msg)}_{max_results}_{min_relevance}"
+            memories = self._recall_cache.get(cache_key)
+
+            if memories is not None:
+                self._stats["recall_hits"] += 1
+            else:
+                self._stats["recall_misses"] += 1
+                memories = await self.hindsight.recall(
+                    query=user_msg,
+                    bank_id=self.bank_id,
+                    max_results=max_results,
+                    min_relevance=min_relevance,
+                )
+                if memories:
+                    self._recall_cache.set(cache_key, memories)
+
+            # 构建注入内容
+            parts = []
+
+            if memories:
                 lines = []
                 for mem in memories[:max_results]:
                     content = mem.get("content", "")
                     relevance = mem.get("relevance", 0)
                     lines.append(f"- {content} (相关度: {relevance:.0%})")
-                context = "\n".join(lines)
+                parts.append("历史记忆：\n" + "\n".join(lines))
 
+            # 注入 Mental Model 上下文（带缓存）
+            if self.config.get("inject_mental_models", True):
+                mm_context = await self._get_mental_models_context()
+                if mm_context:
+                    parts.append(f"用户画像：\n{mm_context}")
+
+            if parts:
                 event.llm_request.context.append(
                     {
                         "role": "system",
-                        "content": f"以下是与用户相关的历史记忆，可作为参考：\n{context}",
+                        "content": "以下是与用户相关的背景信息，可作为参考：\n\n" + "\n\n".join(parts),
                     }
                 )
-                logger.debug(f"注入 {len(memories)} 条记忆到上下文")
+                logger.debug(f"注入 {len(memories) if memories else 0} 条记忆 + Mental Model 到上下文")
 
         except Exception as e:
             logger.error(f"记忆回忆失败: {e}")
 
     @filter.on_llm_response()
     async def on_response(self, event: AstrMessageEvent, result: MessageEventResult):
-        """在 LLM 响应后：存储用户消息 + bot 回复"""
+        """在 LLM 响应后：存储用户消息 + bot 回复（fire-and-forget）"""
         if not self.config.get("auto_retain", True):
             return
         if self._is_excluded(event):
@@ -296,6 +388,15 @@ class HindsightPlugin(Star):
             else:
                 return
 
+            # fire-and-forget：不阻塞响应发送
+            asyncio.create_task(self._retain_async(content, event))
+
+        except Exception as e:
+            logger.error(f"记忆存储失败: {e}")
+
+    async def _retain_async(self, content: str, event: AstrMessageEvent):
+        """异步存储记忆（不阻塞主流程）"""
+        try:
             await self.hindsight.retain(
                 content=content,
                 bank_id=self.bank_id,
@@ -303,9 +404,8 @@ class HindsightPlugin(Star):
                 metadata=self._get_event_metadata(event),
             )
             logger.debug(f"已存储对话记忆: {content[:80]}...")
-
         except Exception as e:
-            logger.error(f"记忆存储失败: {e}")
+            logger.error(f"异步记忆存储失败: {e}")
 
     # ==================== 用户命令 ====================
 
@@ -552,6 +652,14 @@ class HindsightPlugin(Star):
             except Exception:
                 pass
 
+            # 插件性能统计
+            output += "\n⚡ 插件性能:\n"
+            output += f"  • Recall 缓存: {self._recall_cache.size} 条\n"
+            output += f"  • MM 缓存: {self._mm_cache.size} 条\n"
+            output += f"  • Recall 命中率: {self._stats['recall_hits']}/{self._stats['recall_hits'] + self._stats['recall_misses']}\n"
+            output += f"  • MM 命中率: {self._stats['mm_hits']}/{self._stats['mm_hits'] + self._stats['mm_misses']}\n"
+            output += f"  • Retain 队列: {self.hindsight.queue_size} 条\n"
+
             yield event.plain_result(output.strip())
 
         except Exception as e:
@@ -587,6 +695,9 @@ class HindsightPlugin(Star):
                     refreshed.append(model_name)
                 except Exception as e:
                     logger.warning(f"刷新 {model_name} 失败: {e}")
+
+            # 刷新后清除 MM 缓存
+            self._mm_cache.clear()
 
             if refreshed:
                 yield event.plain_result(f"✅ 已触发刷新: {', '.join(refreshed)}\n⏳ 生成需要一些时间，请稍后查看")
@@ -765,5 +876,7 @@ class HindsightPlugin(Star):
 
     async def terminate(self):
         """插件卸载时清理"""
+        if self._cleanup_task and not self._cleanup_task.done():
+            self._cleanup_task.cancel()
         await self.hindsight.close()
         logger.info("Hindsight 插件已卸载")

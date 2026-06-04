@@ -1,12 +1,13 @@
-"""Hindsight API 异步客户端"""
+"""Hindsight API 异步客户端（连接池 + 批量操作）"""
 
 import httpx
+import asyncio
 from typing import Optional, List, Dict, Any
 from astrbot.api import logger
 
 
 class HindsightClient:
-    """Hindsight API 异步客户端（连接池复用）"""
+    """Hindsight API 异步客户端"""
 
     def __init__(self, base_url: str, api_key: Optional[str] = None):
         self.base_url = base_url.rstrip("/")
@@ -14,6 +15,13 @@ class HindsightClient:
         if api_key:
             self.headers["Authorization"] = f"Bearer {api_key}"
         self._client: Optional[httpx.AsyncClient] = None
+
+        # 批量 retain 队列
+        self._retain_queue: List[Dict[str, Any]] = []
+        self._retain_flush_task: Optional[asyncio.Task] = None
+        self._retain_lock = asyncio.Lock()
+        self._batch_size = 10
+        self._batch_interval = 2.0  # 秒
 
     def _get_client(self) -> httpx.AsyncClient:
         """获取或创建复用的 AsyncClient"""
@@ -30,7 +38,12 @@ class HindsightClient:
         return self._client
 
     async def close(self):
-        """关闭连接池"""
+        """关闭连接池，刷新未发送的 retain 队列"""
+        # 先刷新队列
+        if self._retain_queue:
+            await self._flush_retain_queue()
+        if self._retain_flush_task and not self._retain_flush_task.done():
+            self._retain_flush_task.cancel()
         if self._client and not self._client.is_closed:
             await self._client.aclose()
             self._client = None
@@ -43,30 +56,81 @@ class HindsightClient:
         bank_id: str = "astrbot",
         tags: Optional[List[str]] = None,
         metadata: Optional[Dict[str, Any]] = None,
-    ) -> Dict[str, Any]:
-        """存储记忆"""
+        batch: bool = False,
+    ) -> Optional[Dict[str, Any]]:
+        """存储记忆
+
+        Args:
+            batch: True 时加入批量队列异步发送，False 时立即发送
+        """
         # 确保 metadata 的值都是字符串
         safe_metadata = {}
         if metadata:
             for k, v in metadata.items():
                 safe_metadata[k] = str(v) if v is not None else ""
 
+        item = {
+            "content": content,
+            "tags": tags or [],
+            "metadata": safe_metadata,
+        }
+
+        if batch:
+            async with self._retain_lock:
+                self._retain_queue.append(item)
+                if len(self._retain_queue) >= self._batch_size:
+                    await self._flush_retain_queue()
+                elif self._retain_flush_task is None or self._retain_flush_task.done():
+                    self._retain_flush_task = asyncio.create_task(
+                        self._delayed_flush()
+                    )
+            return None
+
+        # 立即发送
         client = self._get_client()
         response = await client.post(
             f"{self.base_url}/v1/default/banks/{bank_id}/memories",
-            json={
-                "items": [
-                    {
-                        "content": content,
-                        "tags": tags or [],
-                        "metadata": safe_metadata,
-                    }
-                ],
-                "async": True,
-            },
+            json={"items": [item], "async": True},
         )
         response.raise_for_status()
         return response.json()
+
+    async def _delayed_flush(self):
+        """延迟刷新队列"""
+        await asyncio.sleep(self._batch_interval)
+        async with self._retain_lock:
+            if self._retain_queue:
+                await self._flush_retain_queue()
+
+    async def _flush_retain_queue(self):
+        """批量发送队列中的 retain 请求"""
+        if not self._retain_queue:
+            return
+
+        items = self._retain_queue[:]
+        self._retain_queue.clear()
+
+        try:
+            client = self._get_client()
+            response = await client.post(
+                f"{self.base_url}/v1/default/banks/astrbot/memories",
+                json={"items": items, "async": True},
+            )
+            response.raise_for_status()
+            logger.debug(f"批量 retain {len(items)} 条记忆成功")
+        except Exception as e:
+            logger.error(f"批量 retain 失败: {e}")
+            # 回退：逐条发送
+            for item in items:
+                try:
+                    client = self._get_client()
+                    response = await client.post(
+                        f"{self.base_url}/v1/default/banks/astrbot/memories",
+                        json={"items": [item], "async": True},
+                    )
+                    response.raise_for_status()
+                except Exception as item_err:
+                    logger.warning(f"单条 retain 失败: {item_err}")
 
     async def recall(
         self,
@@ -220,3 +284,8 @@ class HindsightClient:
         )
         response.raise_for_status()
         return response.json()
+
+    @property
+    def queue_size(self) -> int:
+        """当前 retain 队列大小"""
+        return len(self._retain_queue)
